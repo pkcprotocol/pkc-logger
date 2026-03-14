@@ -1,7 +1,7 @@
 ## Example
 
 ```JavaScript
-import Logger from '@plebbit/plebbit-logger'
+import Logger from '@pkc/pkc-logger'
 const log = Logger('my-app:something:something-else')
 log('this is a log')
 log.error('this is an error')
