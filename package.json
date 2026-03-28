@@ -5,7 +5,7 @@
   "keywords": [
     "pkc"
   ],
-  "repository": "github:pkc/pkc-logger",
+  "repository": "github:pkcprotocol/pkc-logger",
   "license": "GPL-2.0",
   "engines": {
     "node": ">=20.0.0"
