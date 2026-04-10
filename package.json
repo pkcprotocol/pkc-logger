@@ -1,12 +1,12 @@
 {
-  "name": "@pkc/pkc-logger",
+  "name": "@pkcprotocol/pkc-logger",
   "version": "0.0.1",
   "type": "module",
   "keywords": [
     "pkc"
   ],
   "repository": "github:pkcprotocol/pkc-logger",
-  "license": "GPL-2.0",
+  "license": "GPL-3.0-or-later",
   "engines": {
     "node": ">=20.0.0"
   },
