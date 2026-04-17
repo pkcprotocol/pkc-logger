@@ -1,6 +1,6 @@
 {
   "name": "@pkcprotocol/pkc-logger",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "type": "module",
   "keywords": [
     "pkc"
