@@ -7,6 +7,9 @@
   ],
   "repository": "github:pkcprotocol/pkc-logger",
   "license": "GPL-3.0-or-later",
+  "publishConfig": {
+    "access": "public"
+  },
   "engines": {
     "node": ">=20.0.0"
   },
@@ -19,15 +22,29 @@
   ],
   "scripts": {
     "build": "rm -fr dist && tsc",
-    "test": "npm run build && DEBUG=my-app:* node dist/test && DEBUG=my-app:test:something node dist/test && DEBUG=my-app:test:* node dist/test && DEBUG=my-app:error node dist/test && DEBUG=my-app:trace node dist/test && DEBUG=my-app:test:something:trace node dist/test && DEBUG=my-app:test:*,-*:trace node dist/test"
+    "test": "npm run build && DEBUG=my-app:* node dist/test && DEBUG=my-app:test:something node dist/test && DEBUG=my-app:test:* node dist/test && DEBUG=my-app:error node dist/test && DEBUG=my-app:trace node dist/test && DEBUG=my-app:test:something:trace node dist/test && DEBUG=my-app:test:*,-*:trace node dist/test",
+    "prepare": "husky",
+    "release": "HUSKY=0 release-it --config config/.release-it.json"
   },
   "dependencies": {
     "debug": "4.4.3"
   },
   "devDependencies": {
+    "@commitlint/cli": "20.4.3",
+    "@commitlint/config-conventional": "20.4.3",
+    "@release-it/conventional-changelog": "10.0.5",
     "@tsconfig/recommended": "1.0.13",
     "@types/debug": "4.1.12",
     "@types/node": "22.15.0",
+    "commitizen": "4.3.1",
+    "cz-conventional-changelog": "3.3.0",
+    "husky": "9.1.7",
+    "release-it": "19.2.4",
     "typescript": "5.9.3"
+  },
+  "config": {
+    "commitizen": {
+      "path": "cz-conventional-changelog"
+    }
   }
 }
