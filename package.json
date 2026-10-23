@@ -42,6 +42,14 @@
     "release-it": "19.2.4",
     "typescript": "5.9.3"
   },
+  "overrides": {
+    "get-uri": {
+      "basic-ftp": "6.2.3"
+    },
+    "release-it": {
+      "undici": "6.29.1"
+    }
+  },
   "config": {
     "commitizen": {
       "path": "cz-conventional-changelog"
