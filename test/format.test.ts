@@ -143,3 +143,24 @@ test("the budget does not cut short a nested object that fits", () => {
     const out = formatLogArgs([node], { maxLength: 200 });
     assert.equal(out, `{n: {n: {n: {v: "${"x".repeat(100)}"}}}}`);
 });
+
+test("%j cut by the budget is marked truncated, not padded with fake nulls", () => {
+    const peers = Array.from({ length: 1000 }, (_, i) => ({ id: `peer-${i}`, addr: "10.0.0.1" }));
+    const out = formatLogArgs(["peers %j", peers]);
+    assert.doesNotMatch(out, /null/);
+    assert.ok(out.endsWith(TRUNCATION_MARKER), out.slice(-60));
+    assert.ok(out.length <= 16 * 1024);
+});
+
+test("%j labels only real cycles [Circular]", () => {
+    const cyclic: Record<string, unknown> = {};
+    cyclic.self = cyclic;
+    assert.equal(formatLogArgs(["%j", cyclic]), "[Circular]");
+    assert.doesNotMatch(formatLogArgs(["%j", { amount: 10n }]), /Circular/);
+    const bad = {
+        toJSON() {
+            throw new Error("toJSON broke");
+        }
+    };
+    assert.match(formatLogArgs(["%j", bad]), /toJSON broke/);
+});

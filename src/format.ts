@@ -184,22 +184,39 @@ function applyPrintf(fmt: string, args: unknown[], ctx: Ctx): { text: string; re
     return { text, rest: args.slice(i) };
 }
 
-// JSON.stringify with the shared budget: once the approximate output size passes maxLength, the replacer
-// returns undefined, so stringify stops descending (and stops reading getters) instead of serializing everything.
+// JSON.stringify with the shared budget. Once the approximate output size passes maxLength, the replacer
+// emits one sentinel and then undefined for everything after it, so stringify stops descending (and stops
+// reading getters). The output is cut at the sentinel and marked truncated: returning undefined alone would
+// show up as fake `null`s inside arrays.
+const JSON_CUT = "\u0000pkc-logger-cut\u0000";
+const JSON_CUT_QUOTED = JSON.stringify(JSON_CUT);
+
 function boundedJson(arg: unknown, ctx: Ctx): string {
     let size = 0;
+    let cut = false;
     const replacer = function (this: unknown, key: string, value: unknown): unknown {
-        if (ctx.used + size >= ctx.maxLength) return undefined;
-        size += key.length + 4;
-        if (typeof value === "string") size += value.length;
+        if (cut) return undefined;
+        if (ctx.used + size >= ctx.maxLength) {
+            cut = true;
+            return JSON_CUT;
+        }
+        // Array indices never appear in the output, so only object keys count.
+        if (!Array.isArray(this)) size += key.length + 3;
+        size += 1;
+        if (typeof value === "string") size += value.length + 2;
         else if (typeof value !== "object" || value === null) size += String(value).length;
         return value;
     };
+    let out: string;
     try {
-        return JSON.stringify(arg, replacer) ?? String(arg);
-    } catch {
-        return "[Circular]";
+        out = JSON.stringify(arg, replacer) ?? String(arg);
+    } catch (e) {
+        // Same label util.format uses for a cycle; anything else (BigInt, a throwing toJSON) says what failed.
+        const message = e instanceof Error ? e.message : String(e);
+        return /circular/i.test(message) ? "[Circular]" : `[Unserializable: ${message}]`;
     }
+    const at = out.indexOf(JSON_CUT_QUOTED);
+    return at === -1 ? out : out.slice(0, at) + TRUNCATION_MARKER;
 }
 
 /** Formats a log call's arguments into one bounded, color-free string. */

@@ -5,6 +5,8 @@ export { InvalidLogQueryError, INVALID_LOG_QUERY_CODE, DEFAULT_QUERY_LIMIT, MAX_
 export const DEFAULT_BUFFER_MAX_BYTES = 4 * 1024 * 1024;
 // `debug` instances are stateless apart from their namespace, so one per namespace process-wide is enough
 // (pkc-js's update cycle asks for a logger per comment on hot paths; issue pkc-js#351).
+// The cache is never evicted, so namespaces must stay low-cardinality: put per-object identifiers (cid,
+// publicKey...) in tags, never in the namespace. pkc-js uses ~250 fixed namespaces.
 const debugInstances = new Map();
 function getDebug(namespace) {
     let d = debugInstances.get(namespace);
@@ -54,7 +56,9 @@ function mergeTags(parent, extra) {
             out.push(t);
     return out;
 }
-function buildLogger(root, namespace, tags) {
+function buildLogger(root, namespace, ownTags) {
+    // One frozen array shared by this logger and every entry it emits, so no consumer can mutate it.
+    const tags = Object.freeze([...ownTags]);
     const emit = (level, args) => {
         if (namespace === undefined)
             throw new Error("this logger has no namespace; log through child({ namespace })");
@@ -69,7 +73,11 @@ function buildLogger(root, namespace, tags) {
             d("%s", msg);
         for (const listener of root.listeners) {
             try {
-                listener(entry);
+                const result = listener(entry);
+                // An async listener rejects instead of throwing; swallow that too, or Node treats it as an
+                // unhandled rejection and (by default) exits the process.
+                if (result && typeof result.then === "function")
+                    result.then(undefined, () => { });
             }
             catch {
                 // a faulty sink must never break the code that logged
@@ -80,7 +88,7 @@ function buildLogger(root, namespace, tags) {
     logger.error = (...args) => emit("error", args);
     logger.trace = (...args) => emit("trace", args);
     Object.defineProperty(logger, "namespace", { value: namespace, enumerable: true });
-    Object.defineProperty(logger, "tags", { value: Object.freeze([...tags]), enumerable: true });
+    Object.defineProperty(logger, "tags", { value: tags, enumerable: true });
     logger.child = (options) => {
         validateChildOptions(options, "child");
         const childNamespace = namespace ? (options.namespace ? `${namespace}:${options.namespace}` : namespace) : options.namespace;

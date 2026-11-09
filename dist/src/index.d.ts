@@ -5,7 +5,8 @@ export type { LogEntry, LogLevel, LogQuery, LogQueryResult };
 export { InvalidLogQueryError, INVALID_LOG_QUERY_CODE, DEFAULT_QUERY_LIMIT, MAX_QUERY_LIMIT, formatLogArgs };
 export type { FormatOptions } from "./format.js";
 export declare const DEFAULT_BUFFER_MAX_BYTES: number;
-export type LogListener = (entry: LogEntry) => void;
+/** A returned promise is awaited for rejection only, so an async sink that fails cannot crash the process. */
+export type LogListener = (entry: LogEntry) => unknown;
 export interface ChildOptions {
     /** Appended to the parent's namespace with a colon; absolute when the parent has none. */
     namespace?: string;
