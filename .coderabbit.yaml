@@ -9,8 +9,9 @@ reviews:
   auto_review:
     enabled: true
     drafts: false
+    # Review PRs against any base branch, not just the default one.
     base_branches:
-      - master
+      - ".*"
   path_filters:
     - "!dist/**"
     - "!node_modules/**"
