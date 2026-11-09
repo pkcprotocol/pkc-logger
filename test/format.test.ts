@@ -164,3 +164,9 @@ test("%j labels only real cycles [Circular]", () => {
     };
     assert.match(formatLogArgs(["%j", bad]), /toJSON broke/);
 });
+
+test("printf placeholder output is charged to the budget once", () => {
+    const obj = { blob: "x".repeat(1900), more: "y".repeat(1900) };
+    const withSpec = formatLogArgs(["state %O", obj, "done"], { maxLength: 6000 });
+    assert.ok(withSpec.endsWith(" done"), withSpec.slice(-40));
+});

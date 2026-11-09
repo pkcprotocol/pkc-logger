@@ -227,14 +227,17 @@ export function formatLogArgs(args: unknown[], options: FormatOptions = {}): str
     let parts: string[];
     let rest: unknown[];
     if (typeof args[0] === "string" && args[0].includes("%")) {
+        const before = ctx.used;
         const r = applyPrintf(args[0], args.slice(1), ctx);
         parts = [r.text];
         rest = r.rest;
+        // Placeholders rendered through inspectValue/boundedJson already charged their text; charge only the
+        // rest (literal segments, %s strings, numbers), so nothing counts twice.
+        ctx.used = before + Math.max(r.text.length, ctx.used - before);
     } else {
         parts = [];
         rest = args;
     }
-    ctx.used += parts[0]?.length ?? 0;
     for (const arg of rest) parts.push(inspectValue(arg, 0, ctx));
     const joined = parts.join(" ");
     if (joined.length <= ctx.maxLength) return joined;
