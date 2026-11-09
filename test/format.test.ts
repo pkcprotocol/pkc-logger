@@ -170,3 +170,10 @@ test("printf placeholder output is charged to the budget once", () => {
     const withSpec = formatLogArgs(["state %O", obj, "done"], { maxLength: 6000 });
     assert.ok(withSpec.endsWith(" done"), withSpec.slice(-40));
 });
+
+test("numeric placeholders never throw on unconvertible values", () => {
+    for (const spec of ["%d", "%i", "%f"]) {
+        assert.equal(formatLogArgs([`n ${spec}`, Symbol("x")]), "n NaN");
+        assert.equal(formatLogArgs([`n ${spec}`, Object.create(null)]), "n NaN");
+    }
+});

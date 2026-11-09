@@ -172,9 +172,19 @@ function applyPrintf(fmt: string, args: unknown[], ctx: Ctx): { text: string; re
                 return typeof arg === "string" ? arg : inspectValue(arg, 1, ctx);
             case "d":
             case "i":
-                return typeof arg === "bigint" ? `${arg}n` : String(spec === "i" ? Math.trunc(Number(arg)) : Number(arg));
+                if (typeof arg === "bigint") return `${arg}n`;
+                // Number() throws on a Symbol or an object with no usable valueOf/toString; a log call must not.
+                try {
+                    return String(spec === "i" ? Math.trunc(Number(arg)) : Number(arg));
+                } catch {
+                    return "NaN";
+                }
             case "f":
-                return String(parseFloat(String(arg)));
+                try {
+                    return String(parseFloat(String(arg)));
+                } catch {
+                    return "NaN";
+                }
             case "j":
                 return charge(ctx, boundedJson(arg, ctx));
             default:
