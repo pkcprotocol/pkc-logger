@@ -22,9 +22,10 @@
   ],
   "scripts": {
     "build": "rm -fr dist && tsc",
-    "test": "npm run build && DEBUG=my-app:* node dist/test && DEBUG=my-app:test:something node dist/test && DEBUG=my-app:test:* node dist/test && DEBUG=my-app:error node dist/test && DEBUG=my-app:trace node dist/test && DEBUG=my-app:test:something:trace node dist/test && DEBUG=my-app:test:*,-*:trace node dist/test",
+    "test": "npm run build && node --test \"dist/test/**/*.test.js\"",
     "prepare": "husky",
-    "release": "HUSKY=0 release-it --config config/.release-it.json"
+    "release": "HUSKY=0 release-it --config config/.release-it.json",
+    "test:only": "node --test \"dist/test/**/*.test.js\""
   },
   "dependencies": {
     "debug": "4.4.3"
