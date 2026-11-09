@@ -1,0 +1,25 @@
+language: en-US
+early_access: false
+reviews:
+  profile: chill
+  request_changes_workflow: false
+  high_level_summary: true
+  poem: false
+  review_status: true
+  auto_review:
+    enabled: true
+    drafts: false
+    # Review PRs against any base branch, not just the default one.
+    base_branches:
+      - ".*"
+  path_filters:
+    - "!dist/**"
+    - "!node_modules/**"
+    - "!**/*.lock"
+    - "!package-lock.json"
+    - "!**/*.d.ts"
+  tools:
+    eslint:
+      enabled: false
+chat:
+  auto_reply: true
