@@ -301,3 +301,7 @@ test("color escapes in logged strings are stripped, so messages are color-free",
     assert.equal(formatLogArgs(["%s", "\x1b[1;32mok\x1b[22m"]), "ok");
     assert.equal(formatLogArgs([{ s: "\x1b[31mx\x1b[0m" }]).includes("\x1b"), false);
 });
+
+test("8-bit CSI color sequences are stripped too", () => {
+    assert.equal(formatLogArgs(["\u009b31mred\u009b0m"]), "red");
+});

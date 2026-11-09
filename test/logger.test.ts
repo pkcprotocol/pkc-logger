@@ -262,7 +262,7 @@ test("query by regex tests namespace and message", () => {
         root.getLogs({ regex: { source: "BETA", flags: "i" } }).entries.map((e) => e.msg),
         ["beta two"]
     );
-    // global/sticky flags are stripped so matching has no lastIndex state
+    // a global regex keeps no lastIndex state between entries
     assert.equal(root.getLogs({ regex: { source: "a", flags: "g" } }).entries.length, 4);
 });
 
@@ -541,4 +541,38 @@ test("a regex with duplicate flags is rejected", () => {
     assert.throws(() => createLogger().getLogs({ regex: { source: "a", flags: "gg" } }), InvalidLogQueryError);
     assert.throws(() => createLogger().getLogs({ regex: { source: "a", flags: "ii" } }), InvalidLogQueryError);
     assert.doesNotThrow(() => createLogger().getLogs({ regex: { source: "a", flags: "gi" } }));
+});
+
+test("a sticky regex matches only at the start, on every entry", () => {
+    const root = createLogger();
+    root.child({ namespace: "my-app:sub" })("hello");
+    root.child({ namespace: "my-app:other" })("mentions my-app:sub mid-line");
+    root.child({ namespace: "my-app:sub" })("again");
+    const hits = root.getLogs({ regex: { source: "my-app:sub", flags: "y" } }).entries.map((e) => e.msg);
+    assert.deepEqual(hits, ["hello", "again"]);
+    const global = root.getLogs({ regex: { source: "my-app:sub", flags: "g" } }).entries.length;
+    assert.equal(global, 3);
+});
+
+test("query tags are read once, so a changing array cannot skip validation", () => {
+    const root = createLogger();
+    root.child({ namespace: "my-app:t", tags: ["A"] })("x");
+    let reads = 0;
+    const tags = new Proxy(["A"], {
+        get(target, key, receiver) {
+            if (key === "0") return reads++ === 0 ? "A" : undefined;
+            return Reflect.get(target, key, receiver);
+        }
+    });
+    let result: unknown;
+    try {
+        result = root.getLogs({ tags }).entries.length;
+    } catch (e) {
+        result = e;
+    }
+    assert.equal(result, 1);
+});
+
+test("getLogs(null) is rejected", () => {
+    assert.throws(() => createLogger().getLogs(null as never), InvalidLogQueryError);
 });

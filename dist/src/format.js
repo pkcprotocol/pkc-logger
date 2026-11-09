@@ -267,9 +267,9 @@ function describeError(e) {
         return "error cannot be described";
     }
 }
-// CSI sequences (colors, cursor moves) and OSC sequences (titles, hyperlinks).
+// CSI sequences (colors, cursor moves; 7-bit ESC [ or 8-bit U+009B) and OSC sequences (titles, hyperlinks).
 // eslint-disable-next-line no-control-regex
-const ANSI_ESCAPE = /\u001b\[[0-?]*[ -/]*[@-~]|\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)/g;
+const ANSI_ESCAPE = /(?:\u001b\[|\u009b)[0-?]*[ -/]*[@-~]|\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)/g;
 /** Formats a log call's arguments into one bounded, color-free string. */
 export function formatLogArgs(args, options = {}) {
     // Apply a default for every option left undefined, so `{ maxLength: undefined }` does not disable the limit.
@@ -296,7 +296,7 @@ export function formatLogArgs(args, options = {}) {
         parts.push(inspectValue(arg, 0, ctx));
     let joined = parts.join(" ");
     // Logged strings may carry terminal colors; entries are documented color-free, so strip them.
-    if (joined.includes("\u001b"))
+    if (joined.includes("\u001b") || joined.includes("\u009b"))
         joined = joined.replace(ANSI_ESCAPE, "");
     if (joined.length <= ctx.maxLength)
         return joined;

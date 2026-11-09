@@ -32,7 +32,7 @@ export function isTagArray(value) {
     return true;
 }
 export function normalizeQuery(query) {
-    const q = query ?? {};
+    const q = query === undefined ? {} : query;
     if (typeof q !== "object" || q === null || Array.isArray(q))
         throw new InvalidLogQueryError("query must be an object");
     const known = new Set(["tags", "regex", "since", "until", "limit", "cursor", "order"]);
@@ -40,7 +40,8 @@ export function normalizeQuery(query) {
         if (!known.has(k))
             throw new InvalidLogQueryError(`unknown query field '${k}'`);
     // Defaults apply only to omitted fields; an explicit null is a malformed query, not "no filter".
-    const tags = q.tags === undefined ? [] : q.tags;
+    // Copied once, then validated and matched from the copy, so the caller's array is never read again.
+    const tags = q.tags === undefined ? [] : Array.isArray(q.tags) ? Array.from(q.tags) : q.tags;
     if (!isTagArray(tags))
         throw new InvalidLogQueryError("tags must be an array of non-empty strings");
     let regex;
@@ -49,11 +50,9 @@ export function normalizeQuery(query) {
             throw new InvalidLogQueryError("regex must be { source: string, flags?: string }");
         if (q.regex.flags !== undefined && typeof q.regex.flags !== "string")
             throw new InvalidLogQueryError("regex.flags must be a string");
-        // A sticky or global regex carries lastIndex state across .test() calls; strip them so matching is stateless.
-        const flags = q.regex.flags ?? "";
         try {
-            new RegExp(q.regex.source, flags); // validate the flags as given, so "gg" is rejected before stripping
-            regex = new RegExp(q.regex.source, flags.replace(/[gy]/g, ""));
+            // Flags are kept as given; matching resets lastIndex, so g and y carry no state between entries.
+            regex = new RegExp(q.regex.source, q.regex.flags ?? "");
         }
         catch (e) {
             throw new InvalidLogQueryError(`invalid regex: ${e.message}`);
@@ -140,8 +139,11 @@ export class LogRingBuffer {
             for (const t of q.tags)
                 if (!e.tags.includes(t))
                     return false;
-            if (q.regex && !q.regex.test(`${e.namespace} ${e.msg}`))
-                return false;
+            if (q.regex) {
+                q.regex.lastIndex = 0;
+                if (!q.regex.test(`${e.namespace} ${e.msg}`))
+                    return false;
+            }
             return true;
         };
         const out = [];
