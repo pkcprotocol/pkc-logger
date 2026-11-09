@@ -63,6 +63,16 @@ function isNonNegativeInt(v: unknown): v is number {
 }
 
 /** Validates a query and compiles its regex. Throws InvalidLogQueryError (code ERR_INVALID_LOG_QUERY). */
+/** An array of non-empty strings with no holes (`some` and `every` skip holes, so index every position). */
+export function isTagArray(value: unknown): value is string[] {
+    if (!Array.isArray(value)) return false;
+    for (let i = 0; i < value.length; i++) {
+        const t: unknown = value[i];
+        if (typeof t !== "string" || t.length === 0) return false;
+    }
+    return true;
+}
+
 export function normalizeQuery(query: LogQuery | undefined): Required<Pick<LogQuery, "limit" | "order">> & {
     tags: string[];
     regex?: RegExp;
@@ -75,8 +85,9 @@ export function normalizeQuery(query: LogQuery | undefined): Required<Pick<LogQu
     const known = new Set(["tags", "regex", "since", "until", "limit", "cursor", "order"]);
     for (const k of Object.keys(q)) if (!known.has(k)) throw new InvalidLogQueryError(`unknown query field '${k}'`);
 
-    const tags = q.tags ?? [];
-    if (!Array.isArray(tags) || tags.some((t) => typeof t !== "string" || t.length === 0))
+    // Defaults apply only to omitted fields; an explicit null is a malformed query, not "no filter".
+    const tags = q.tags === undefined ? [] : q.tags;
+    if (!isTagArray(tags))
         throw new InvalidLogQueryError("tags must be an array of non-empty strings");
 
     let regex: RegExp | undefined;
@@ -85,9 +96,10 @@ export function normalizeQuery(query: LogQuery | undefined): Required<Pick<LogQu
             throw new InvalidLogQueryError("regex must be { source: string, flags?: string }");
         if (q.regex.flags !== undefined && typeof q.regex.flags !== "string") throw new InvalidLogQueryError("regex.flags must be a string");
         // A sticky or global regex carries lastIndex state across .test() calls; strip them so matching is stateless.
-        const flags = (q.regex.flags ?? "").replace(/[gy]/g, "");
+        const flags = q.regex.flags ?? "";
         try {
-            regex = new RegExp(q.regex.source, flags);
+            new RegExp(q.regex.source, flags); // validate the flags as given, so "gg" is rejected before stripping
+            regex = new RegExp(q.regex.source, flags.replace(/[gy]/g, ""));
         } catch (e) {
             throw new InvalidLogQueryError(`invalid regex: ${(e as Error).message}`);
         }
@@ -99,13 +111,13 @@ export function normalizeQuery(query: LogQuery | undefined): Required<Pick<LogQu
     }
     if (q.since !== undefined && q.until !== undefined && q.since > q.until) throw new InvalidLogQueryError("since must be <= until");
 
-    let limit = q.limit ?? DEFAULT_QUERY_LIMIT;
+    let limit = q.limit === undefined ? DEFAULT_QUERY_LIMIT : q.limit;
     if (!isNonNegativeInt(limit) || limit === 0) throw new InvalidLogQueryError("limit must be a positive integer");
     if (limit > MAX_QUERY_LIMIT) limit = MAX_QUERY_LIMIT;
 
     if (q.cursor !== undefined && !isNonNegativeInt(q.cursor)) throw new InvalidLogQueryError("cursor must be a non-negative integer");
 
-    const order = q.order ?? "asc";
+    const order = q.order === undefined ? "asc" : q.order;
     if (order !== "asc" && order !== "desc") throw new InvalidLogQueryError("order must be 'asc' or 'desc'");
 
     return { tags, regex, since: q.since, until: q.until, limit, cursor: q.cursor, order };

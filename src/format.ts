@@ -184,7 +184,8 @@ function applyPrintf(fmt: string, args: unknown[], ctx: Ctx): { text: string; re
                 if (typeof arg === "bigint") return `${arg}n`;
                 // Number() throws on a Symbol or an object with no usable valueOf/toString; a log call must not.
                 try {
-                    return String(spec === "i" ? Math.trunc(Number(arg)) : Number(arg));
+                    // %i is parseInt, as in util.format: "12px" prints 12.
+                    return String(spec === "i" ? parseInt(String(arg), 10) : Number(arg));
                 } catch {
                     return "NaN";
                 }
@@ -259,6 +260,10 @@ function describeError(e: unknown): string {
     }
 }
 
+// CSI sequences (colors, cursor moves) and OSC sequences (titles, hyperlinks).
+// eslint-disable-next-line no-control-regex
+const ANSI_ESCAPE = /\u001b\[[0-?]*[ -/]*[@-~]|\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)/g;
+
 /** Formats a log call's arguments into one bounded, color-free string. */
 export function formatLogArgs(args: unknown[], options: FormatOptions = {}): string {
     // Apply a default for every option left undefined, so `{ maxLength: undefined }` does not disable the limit.
@@ -279,7 +284,9 @@ export function formatLogArgs(args: unknown[], options: FormatOptions = {}): str
         rest = args;
     }
     for (const arg of rest) parts.push(inspectValue(arg, 0, ctx));
-    const joined = parts.join(" ");
+    let joined = parts.join(" ");
+    // Logged strings may carry terminal colors; entries are documented color-free, so strip them.
+    if (joined.includes("\u001b")) joined = joined.replace(ANSI_ESCAPE, "");
     if (joined.length <= ctx.maxLength) return joined;
     if (ctx.maxLength <= TRUNCATION_MARKER.length) return TRUNCATION_MARKER.slice(0, ctx.maxLength);
     return joined.slice(0, ctx.maxLength - TRUNCATION_MARKER.length) + TRUNCATION_MARKER;

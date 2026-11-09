@@ -509,3 +509,36 @@ test("a descendant cannot turn listener delivery back on", () => {
     assert.equal(calls, 0);
     assert.equal(root.getLogs().entries.length, 1);
 });
+
+test("a stale unsubscribe function does not remove a newer subscription", () => {
+    const root = createLogger();
+    const log = root.child({ namespace: "my-app:unsub" });
+    const seen: string[] = [];
+    const sink = (e: LogEntry) => seen.push(e.msg);
+    const off1 = root.addListener(sink);
+    off1();
+    root.addListener(sink);
+    off1(); // double cleanup of the old subscription
+    log("still subscribed");
+    assert.deepEqual(seen, ["still subscribed"]);
+});
+
+test("sparse tag arrays are rejected, not thrown out of a later log call", () => {
+    const root = createLogger();
+    // eslint-disable-next-line no-sparse-arrays
+    assert.throws(() => root.child({ namespace: "my-app:sparse", tags: [, "a"] as string[] }), /tags must be/);
+    // eslint-disable-next-line no-sparse-arrays
+    assert.throws(() => root.getLogs({ tags: [, "a"] as string[] }), InvalidLogQueryError);
+});
+
+test("null query fields are rejected instead of falling back to defaults", () => {
+    const root = createLogger();
+    for (const field of ["tags", "limit", "order"])
+        assert.throws(() => root.getLogs({ [field]: null } as never), InvalidLogQueryError, `${field}: null was accepted`);
+});
+
+test("a regex with duplicate flags is rejected", () => {
+    assert.throws(() => createLogger().getLogs({ regex: { source: "a", flags: "gg" } }), InvalidLogQueryError);
+    assert.throws(() => createLogger().getLogs({ regex: { source: "a", flags: "ii" } }), InvalidLogQueryError);
+    assert.doesNotThrow(() => createLogger().getLogs({ regex: { source: "a", flags: "gi" } }));
+});

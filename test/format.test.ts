@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { format } from "node:util";
 import { formatLogArgs, TRUNCATION_MARKER } from "../src/format.js";
 
 test("joins plain arguments with spaces, strings verbatim at top level", () => {
@@ -285,4 +286,18 @@ test("%j labels a cycle through a non-enumerable array index [Circular]", () => 
     const a: unknown[] = [];
     Object.defineProperty(a, "0", { value: a, enumerable: false });
     assert.equal(formatLogArgs(["%j", a]), "[Circular]");
+});
+
+test("%i parses like util.format: leading digits of a string", () => {
+    assert.equal(formatLogArgs(["%i", "12px"]), format("%i", "12px"));
+    assert.equal(formatLogArgs(["%i", "12px"]), "12");
+    assert.equal(formatLogArgs(["%i", 3.9]), "3");
+    assert.equal(formatLogArgs(["%i", -3.9]), "-3");
+    assert.equal(formatLogArgs(["%i", 5n]), "5n");
+});
+
+test("color escapes in logged strings are stripped, so messages are color-free", () => {
+    assert.equal(formatLogArgs(["\x1b[31mred\x1b[0m done"]), "red done");
+    assert.equal(formatLogArgs(["%s", "\x1b[1;32mok\x1b[22m"]), "ok");
+    assert.equal(formatLogArgs([{ s: "\x1b[31mx\x1b[0m" }]).includes("\x1b"), false);
 });
