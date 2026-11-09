@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.2.0](https://github.com/pkcprotocol/pkc-logger/compare/v0.1.2...v0.2.0) (2026-11-09)
+
+### ⚠ BREAKING CHANGES
+
+* Logger("ns") and child("ns") throw; pass { namespace }.
+0.1.2 released this change as a patch by mistake.
+
+### Features
+
+* require Logger({ namespace }) instead of the Logger(namespace) string signature ([#4](https://github.com/pkcprotocol/pkc-logger/issues/4)) ([3b85d48](https://github.com/pkcprotocol/pkc-logger/commit/3b85d481031db34bb11ae42302573c34fabb92ca))
+
 ## [0.1.2](https://github.com/pkcprotocol/pkc-logger/compare/v0.1.1...v0.1.2) (2026-11-09)
 
 ### Features
