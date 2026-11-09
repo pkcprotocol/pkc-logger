@@ -87,6 +87,11 @@ const { entries, nextCursor } = root.getLogs({
 An invalid query (bad regex, wrong types, unknown field) throws an `InvalidLogQueryError` with
 `code === "ERR_INVALID_LOG_QUERY"` before anything is scanned.
 
+**`regex` is trusted input.** It runs on the JavaScript regex engine, synchronously, and cannot be interrupted, so a
+catastrophically backtracking pattern such as `(a+)+$` can block the process for seconds or longer. Only accept a
+regex from someone you would also let stop the process, such as the operator or an authenticated RPC client; never
+forward one from an anonymous or untrusted source.
+
 ## Listeners
 
 ```js

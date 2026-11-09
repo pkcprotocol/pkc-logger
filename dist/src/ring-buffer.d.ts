@@ -15,7 +15,10 @@ export interface LogEntry {
 export interface LogQuery {
     /** Every listed tag must be present on the entry (AND). */
     tags?: string[];
-    /** Tested against `namespace + " " + msg`. */
+    /**
+     * Tested against `namespace + " " + msg`. Trusted input: a backtracking pattern such as `(a+)+$` runs
+     * synchronously and can block the process, so never accept one from an untrusted source.
+     */
     regex?: {
         source: string;
         flags?: string;
