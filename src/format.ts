@@ -25,7 +25,30 @@ const DEFAULTS: Required<FormatOptions> = {
 
 export const TRUNCATION_MARKER = "…[truncated]";
 
-type Ctx = Required<FormatOptions> & { seen: Set<object> };
+// `used` approximates the characters rendered so far. Once it passes maxLength, traversal stops, so a large
+// or heavily shared object graph costs O(maxLength) instead of O(graph paths).
+type Ctx = Required<FormatOptions> & { seen: Set<object>; used: number };
+
+const BUDGET_SPENT = "…";
+
+function spent(ctx: Ctx): boolean {
+    return ctx.used >= ctx.maxLength;
+}
+
+function charge(ctx: Ctx, s: string): string {
+    ctx.used += s.length;
+    return s;
+}
+
+// Reads a property without letting a throwing getter (or Proxy trap) escape into the caller's log call.
+function readProp(obj: object, key: string): unknown {
+    try {
+        return (obj as Record<string, unknown>)[key];
+    } catch {
+        return GETTER_THREW;
+    }
+}
+const GETTER_THREW = Symbol("getter threw");
 
 function truncateString(s: string, max: number): string {
     return s.length > max ? s.slice(0, max) + TRUNCATION_MARKER : s;
@@ -37,12 +60,23 @@ function inspectError(err: Error, depth: number, ctx: Ctx): string {
     const extraKeys = Object.keys(err).filter((k) => k !== "name" && k !== "message" && k !== "stack");
     if (extraKeys.length === 0 && !("cause" in err)) return head;
     const extras: Record<string, unknown> = {};
-    for (const k of extraKeys) extras[k] = (err as unknown as Record<string, unknown>)[k];
-    if ("cause" in err) extras["cause"] = (err as { cause?: unknown }).cause;
+    for (const k of extraKeys) extras[k] = readProp(err, k);
+    if ("cause" in err) extras["cause"] = readProp(err, "cause");
     return `${head} ${inspectValue(extras, depth, ctx)}`;
 }
 
 function inspectValue(value: unknown, depth: number, ctx: Ctx): string {
+    if (value === GETTER_THREW) return charge(ctx, "[Getter threw]");
+    if (spent(ctx)) return BUDGET_SPENT;
+    const out = inspectUncharged(value, depth, ctx);
+    // Containers were already charged through their children (and keys); charging their joined text again
+    // would count nested content once per level and cut deep objects short.
+    if (typeof value !== "object" || value === null) charge(ctx, out);
+    else ctx.used += 2;
+    return out;
+}
+
+function inspectUncharged(value: unknown, depth: number, ctx: Ctx): string {
     switch (typeof value) {
         case "string":
             return depth === 0 ? value : JSON.stringify(truncateString(value, ctx.maxStringLength));
@@ -61,7 +95,15 @@ function inspectValue(value: unknown, depth: number, ctx: Ctx): string {
     if (value === null) return "null";
     const obj = value as object;
 
-    if (obj instanceof Error) return inspectError(obj, depth, ctx);
+    if (obj instanceof Error) {
+        if (ctx.seen.has(obj)) return "[Circular]";
+        ctx.seen.add(obj);
+        try {
+            return inspectError(obj, depth, ctx);
+        } finally {
+            ctx.seen.delete(obj);
+        }
+    }
     if (obj instanceof Date) return isNaN(obj.getTime()) ? "Invalid Date" : obj.toISOString();
     if (obj instanceof RegExp) return obj.toString();
     if (ArrayBuffer.isView(obj)) return `${obj.constructor.name}(${(obj as ArrayBufferView).byteLength})`;
@@ -74,7 +116,11 @@ function inspectValue(value: unknown, depth: number, ctx: Ctx): string {
     ctx.seen.add(obj);
     try {
         if (Array.isArray(obj)) {
-            const shown = obj.slice(0, ctx.maxArrayLength).map((v) => inspectValue(v, depth + 1, ctx));
+            const shown: string[] = [];
+            for (const v of obj.slice(0, ctx.maxArrayLength)) {
+                if (spent(ctx)) break;
+                shown.push(inspectValue(v, depth + 1, ctx));
+            }
             if (obj.length > ctx.maxArrayLength) shown.push(`... ${obj.length - ctx.maxArrayLength} more`);
             return `[${shown.join(", ")}]`;
         }
@@ -82,7 +128,7 @@ function inspectValue(value: unknown, depth: number, ctx: Ctx): string {
             const shown: string[] = [];
             let i = 0;
             for (const [k, v] of obj) {
-                if (i++ >= ctx.maxArrayLength) break;
+                if (i++ >= ctx.maxArrayLength || spent(ctx)) break;
                 shown.push(`${inspectValue(k, depth + 1, ctx)} => ${inspectValue(v, depth + 1, ctx)}`);
             }
             if (obj.size > ctx.maxArrayLength) shown.push(`... ${obj.size - ctx.maxArrayLength} more`);
@@ -92,14 +138,19 @@ function inspectValue(value: unknown, depth: number, ctx: Ctx): string {
             const shown: string[] = [];
             let i = 0;
             for (const v of obj) {
-                if (i++ >= ctx.maxArrayLength) break;
+                if (i++ >= ctx.maxArrayLength || spent(ctx)) break;
                 shown.push(inspectValue(v, depth + 1, ctx));
             }
             if (obj.size > ctx.maxArrayLength) shown.push(`... ${obj.size - ctx.maxArrayLength} more`);
             return `Set(${obj.size}) {${shown.join(", ")}}`;
         }
         const keys = Object.keys(obj);
-        const shown = keys.slice(0, ctx.maxKeys).map((k) => `${k}: ${inspectValue((obj as Record<string, unknown>)[k], depth + 1, ctx)}`);
+        const shown: string[] = [];
+        for (const k of keys.slice(0, ctx.maxKeys)) {
+            if (spent(ctx)) break;
+            ctx.used += k.length + 2;
+            shown.push(`${k}: ${inspectValue(readProp(obj, k), depth + 1, ctx)}`);
+        }
         if (keys.length > ctx.maxKeys) shown.push(`... ${keys.length - ctx.maxKeys} more`);
         const ctor = obj.constructor && obj.constructor !== Object && obj.constructor.name ? `${obj.constructor.name} ` : "";
         return `${ctor}{${shown.join(", ")}}`;
@@ -125,11 +176,7 @@ function applyPrintf(fmt: string, args: unknown[], ctx: Ctx): { text: string; re
             case "f":
                 return String(parseFloat(String(arg)));
             case "j":
-                try {
-                    return JSON.stringify(arg) ?? String(arg);
-                } catch {
-                    return "[Circular]";
-                }
+                return charge(ctx, boundedJson(arg, ctx));
             default:
                 return inspectValue(arg, 1, ctx);
         }
@@ -137,9 +184,29 @@ function applyPrintf(fmt: string, args: unknown[], ctx: Ctx): { text: string; re
     return { text, rest: args.slice(i) };
 }
 
+// JSON.stringify with the shared budget: once the approximate output size passes maxLength, the replacer
+// returns undefined, so stringify stops descending (and stops reading getters) instead of serializing everything.
+function boundedJson(arg: unknown, ctx: Ctx): string {
+    let size = 0;
+    const replacer = function (this: unknown, key: string, value: unknown): unknown {
+        if (ctx.used + size >= ctx.maxLength) return undefined;
+        size += key.length + 4;
+        if (typeof value === "string") size += value.length;
+        else if (typeof value !== "object" || value === null) size += String(value).length;
+        return value;
+    };
+    try {
+        return JSON.stringify(arg, replacer) ?? String(arg);
+    } catch {
+        return "[Circular]";
+    }
+}
+
 /** Formats a log call's arguments into one bounded, color-free string. */
 export function formatLogArgs(args: unknown[], options: FormatOptions = {}): string {
-    const ctx: Ctx = { ...DEFAULTS, ...options, seen: new Set() };
+    // Apply a default for every option left undefined, so `{ maxLength: undefined }` does not disable the limit.
+    const ctx: Ctx = { ...DEFAULTS, seen: new Set(), used: 0 };
+    for (const k of Object.keys(DEFAULTS) as (keyof FormatOptions)[]) if (options[k] !== undefined) ctx[k] = options[k]!;
     let parts: string[];
     let rest: unknown[];
     if (typeof args[0] === "string" && args[0].includes("%")) {
@@ -150,7 +217,10 @@ export function formatLogArgs(args: unknown[], options: FormatOptions = {}): str
         parts = [];
         rest = args;
     }
+    ctx.used += parts[0]?.length ?? 0;
     for (const arg of rest) parts.push(inspectValue(arg, 0, ctx));
     const joined = parts.join(" ");
-    return joined.length > ctx.maxLength ? joined.slice(0, ctx.maxLength - TRUNCATION_MARKER.length) + TRUNCATION_MARKER : joined;
+    if (joined.length <= ctx.maxLength) return joined;
+    if (ctx.maxLength <= TRUNCATION_MARKER.length) return TRUNCATION_MARKER.slice(0, ctx.maxLength);
+    return joined.slice(0, ctx.maxLength - TRUNCATION_MARKER.length) + TRUNCATION_MARKER;
 }

@@ -56,11 +56,12 @@ test("disabled namespaces format nothing, capture nothing, notify nobody", () =>
     const log = root.child({ namespace: "my-app:quiet", tags: ["T"] });
     let listened = 0;
     root.addListener(() => listened++);
-    let toStringCalls = 0;
+    // The formatter reads `then` on every object (promise detection), so this getter observes formatting.
+    let thenReads = 0;
     const spy = {
-        toString() {
-            toStringCalls++;
-            return "spy";
+        get then() {
+            thenReads++;
+            return undefined;
         }
     };
     log("hello", spy);
@@ -69,7 +70,11 @@ test("disabled namespaces format nothing, capture nothing, notify nobody", () =>
     assert.equal(root.getLogs().entries.length, 0);
     assert.equal(listened, 0);
     assert.equal(printed.length, 0);
-    assert.equal(toStringCalls, 0);
+    assert.equal(thenReads, 0);
+    // Prove the spy does observe formatting, so the zero above means something.
+    Logger.enable("my-app:*");
+    log("hello", spy);
+    assert.ok(thenReads > 0);
 });
 
 test("enabled lines become entries with the level of the method called", () => {
@@ -326,4 +331,67 @@ test("invalid queries throw ERR_INVALID_LOG_QUERY before scanning", () => {
             `expected ${re} for ${JSON.stringify(q)}`
         );
     }
+});
+
+// --- regression tests (each written to reproduce the bug before its fix) ---
+
+test("a rejecting async listener does not cause an unhandled rejection", async () => {
+    const unhandled: unknown[] = [];
+    const onUnhandled = (r: unknown) => unhandled.push(r);
+    process.on("unhandledRejection", onUnhandled);
+    try {
+        const root = createLogger();
+        root.addListener(async () => {
+            throw new Error("async sink failed");
+        });
+        root.child({ namespace: "my-app:async" })("hello");
+        await new Promise((r) => setTimeout(r, 20));
+        assert.deepEqual(unhandled, []);
+    } finally {
+        process.off("unhandledRejection", onUnhandled);
+    }
+});
+
+test("mutating a delivered entry does not change the logger's tags or buffered history", () => {
+    const root = createLogger();
+    const log = root.child({ namespace: "my-app:m", tags: ["PK1"] });
+    root.addListener((entry) => {
+        try {
+            (entry.tags as string[]).push("EVIL");
+        } catch {
+            // frozen: fine
+        }
+    });
+    log("one");
+    const [first] = root.getLogs().entries;
+    try {
+        (first!.tags as string[]).push("EVIL2");
+    } catch {
+        // frozen: fine
+    }
+    log("two");
+    for (const e of root.getLogs().entries) assert.deepEqual(e.tags, ["PK1"]);
+    assert.deepEqual(log.tags, ["PK1"]);
+});
+
+test("query by an until bound returns exactly the entries at or before it", (t) => {
+    let now = 1000;
+    t.mock.method(Date, "now", () => now);
+    const root = createLogger();
+    const log = root.child({ namespace: "my-app:time" });
+    for (const [time, msg] of [[1000, "before"], [2000, "at"], [3000, "after"]] as const) {
+        now = time;
+        log(msg);
+    }
+    assert.deepEqual(root.getLogs({ until: 2000 }).entries.map((e) => e.msg), ["before", "at"]);
+});
+
+test("evicted entries are released, not kept until compaction", async () => {
+    const { LogRingBuffer } = await import("../src/ring-buffer.js");
+    const buf = new LogRingBuffer(2000);
+    for (let i = 0; i < 100; i++) buf.push({ time: i, level: "log", namespace: "n", msg: "x".repeat(50), tags: [] });
+    const slots = (buf as unknown as { entries: (LogEntry | undefined)[] }).entries;
+    const head = (buf as unknown as { head: number }).head;
+    assert.ok(head > 0);
+    for (let i = 0; i < head; i++) assert.equal(slots[i], undefined, `slot ${i} still holds an evicted entry`);
 });

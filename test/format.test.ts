@@ -78,3 +78,68 @@ test("class instances show their constructor name", () => {
     }
     assert.equal(formatLogArgs([new Thing()]), "Thing {id: 7}");
 });
+
+// --- regression tests (each written to reproduce the bug before its fix) ---
+
+test("a getter that throws does not make formatting throw", () => {
+    const obj = {
+        ok: 1,
+        get boom(): number {
+            throw new Error("nope");
+        }
+    };
+    assert.equal(formatLogArgs(["x", obj]), "x {ok: 1, boom: [Getter threw]}");
+});
+
+test("an explicit undefined option keeps the default limit", () => {
+    const out = formatLogArgs(["a".repeat(20_000)], { maxLength: undefined });
+    assert.equal(out.length, 16 * 1024);
+});
+
+test("output never exceeds a maxLength shorter than the truncation marker", () => {
+    const out = formatLogArgs(["a".repeat(100)], { maxLength: 4 });
+    assert.equal(out, TRUNCATION_MARKER.slice(0, 4));
+});
+
+test("an Error whose cause is itself prints [Circular]", () => {
+    const err = new Error("loop");
+    (err as { cause?: unknown }).cause = err;
+    const out = formatLogArgs([err]);
+    assert.match(out, /cause: \[Circular\]/);
+    assert.equal(out.match(/Error: loop/g)!.length, 1);
+});
+
+test("%j output is bounded by maxLength and stringify stops early", () => {
+    let reads = 0;
+    const big = Array.from({ length: 10_000 }, (_, i) => ({
+        get v() {
+            reads++;
+            return i;
+        }
+    }));
+    const out = formatLogArgs(["%j", big], { maxLength: 100 });
+    assert.ok(out.length <= 100);
+    assert.ok(reads < 10_000, `read ${reads} getters`);
+});
+
+test("a shared (non-cyclic) object graph stops rendering once the budget is spent", () => {
+    // Each level references the next twice: 2^20 paths to the leaf without a budget.
+    let leafReads = 0;
+    let node: unknown = {
+        get leaf() {
+            leafReads++;
+            return 1;
+        }
+    };
+    for (let i = 0; i < 20; i++) node = { a: node, b: node };
+    const out = formatLogArgs([node], { maxDepth: 25, maxLength: 1000 });
+    assert.ok(out.length <= 1000);
+    assert.ok(leafReads < 1000, `rendered the leaf ${leafReads} times`);
+});
+
+test("the budget does not cut short a nested object that fits", () => {
+    let node: unknown = { v: "x".repeat(100) };
+    for (let i = 0; i < 3; i++) node = { n: node };
+    const out = formatLogArgs([node], { maxLength: 200 });
+    assert.equal(out, `{n: {n: {n: {v: "${"x".repeat(100)}"}}}}`);
+});

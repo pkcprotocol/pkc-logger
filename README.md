@@ -95,8 +95,10 @@ const off = root.addListener((entry) => fileStream.write(JSON.stringify(entry) +
 off();
 ```
 
-Listeners receive exactly the entries the root captures. A listener that throws is ignored, so a faulty sink never
-breaks the code that logged. The default root exposes `Logger.addListener` / `Logger.removeListener`.
+Listeners receive every enabled entry, including ones the buffer does not keep (buffer disabled with `maxBytes: 0`, or
+an entry too large to retain); those never show up in `getLogs()`. Entries are frozen, since the same object goes to
+every listener and into the buffer. A listener that throws, or an async listener that rejects, is ignored, so a faulty
+sink never breaks the code that logged. The default root exposes `Logger.addListener` / `Logger.removeListener`.
 
 ## Static controls
 

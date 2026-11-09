@@ -9,7 +9,8 @@ export type { FormatOptions } from "./format.js";
 
 export const DEFAULT_BUFFER_MAX_BYTES = 4 * 1024 * 1024;
 
-export type LogListener = (entry: LogEntry) => void;
+/** A returned promise is awaited for rejection only, so an async sink that fails cannot crash the process. */
+export type LogListener = (entry: LogEntry) => unknown;
 
 export interface ChildOptions {
     /** Appended to the parent's namespace with a colon; absolute when the parent has none. */
@@ -44,6 +45,8 @@ interface RootState {
 
 // `debug` instances are stateless apart from their namespace, so one per namespace process-wide is enough
 // (pkc-js's update cycle asks for a logger per comment on hot paths; issue pkc-js#351).
+// The cache is never evicted, so namespaces must stay low-cardinality: put per-object identifiers (cid,
+// publicKey...) in tags, never in the namespace. pkc-js uses ~250 fixed namespaces.
 const debugInstances = new Map<string, Debug.Debugger>();
 function getDebug(namespace: string): Debug.Debugger {
     let d = debugInstances.get(namespace);
@@ -93,7 +96,9 @@ function mergeTags(parent: readonly string[], extra: string[] | undefined): stri
     return out;
 }
 
-function buildLogger(root: RootState, namespace: string | undefined, tags: string[]): Logger {
+function buildLogger(root: RootState, namespace: string | undefined, ownTags: readonly string[]): Logger {
+    // One frozen array shared by this logger and every entry it emits, so no consumer can mutate it.
+    const tags = Object.freeze([...ownTags]);
     const emit = (level: LogLevel, args: unknown[]): void => {
         if (namespace === undefined) throw new Error("this logger has no namespace; log through child({ namespace })");
         const d = pickEnabled(namespace, level);
@@ -104,7 +109,11 @@ function buildLogger(root: RootState, namespace: string | undefined, tags: strin
         else d("%s", msg);
         for (const listener of root.listeners) {
             try {
-                listener(entry);
+                const result: unknown = listener(entry);
+                // An async listener rejects instead of throwing; swallow that too, or Node treats it as an
+                // unhandled rejection and (by default) exits the process.
+                if (result && typeof (result as PromiseLike<unknown>).then === "function")
+                    (result as PromiseLike<unknown>).then(undefined, () => {});
             } catch {
                 // a faulty sink must never break the code that logged
             }
@@ -115,7 +124,7 @@ function buildLogger(root: RootState, namespace: string | undefined, tags: strin
     logger.error = (...args: unknown[]) => emit("error", args);
     logger.trace = (...args: unknown[]) => emit("trace", args);
     Object.defineProperty(logger, "namespace", { value: namespace, enumerable: true });
-    Object.defineProperty(logger, "tags", { value: Object.freeze([...tags]), enumerable: true });
+    Object.defineProperty(logger, "tags", { value: tags, enumerable: true });
     logger.child = (options: ChildOptions) => {
         validateChildOptions(options, "child");
         const childNamespace = namespace ? (options.namespace ? `${namespace}:${options.namespace}` : namespace) : options.namespace;

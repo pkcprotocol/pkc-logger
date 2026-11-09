@@ -1,16 +1,17 @@
 export type LogLevel = "log" | "error" | "trace";
 
+/** Entries are frozen: the same object is buffered and handed to every listener and query caller. */
 export interface LogEntry {
     /** Monotonic per-root sequence number; the query cursor. */
-    seq: number;
+    readonly seq: number;
     /** Unix epoch milliseconds. */
-    time: number;
-    level: LogLevel;
-    namespace: string;
+    readonly time: number;
+    readonly level: LogLevel;
+    readonly namespace: string;
     /** Formatted message, color-free, capped (see format.ts). */
-    msg: string;
+    readonly msg: string;
     /** Identifier tags accumulated down the child chain, deduplicated. */
-    tags: string[];
+    readonly tags: readonly string[];
 }
 
 export interface LogQuery {
@@ -139,7 +140,7 @@ export class LogRingBuffer {
     }
 
     push(entry: Omit<LogEntry, "seq">): LogEntry {
-        const full: LogEntry = { seq: this.nextSeq++, ...entry };
+        const full: LogEntry = Object.freeze({ seq: this.nextSeq++, ...entry });
         if (this.maxBytes === 0) return full;
         const cost = entryCost(full);
         if (cost > this.maxBytes) return full; // never fits; drop rather than evict everything for it
@@ -147,6 +148,8 @@ export class LogRingBuffer {
         this.bytes += cost;
         while (this.bytes > this.maxBytes) {
             this.bytes -= entryCost(this.entries[this.head]!);
+            // Release the evicted entry now; compaction only runs once the dead prefix is large.
+            this.entries[this.head] = undefined as unknown as LogEntry;
             this.head++;
         }
         // Compact once the dead prefix dominates, so memory tracks the live window not the push count.
