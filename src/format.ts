@@ -210,11 +210,23 @@ function applyPrintf(fmt: string, args: unknown[], ctx: Ctx): { text: string; re
 const JSON_CUT = "\u0000pkc-logger-cut\u0000";
 const JSON_CUT_QUOTED = JSON.stringify(JSON_CUT);
 
+// Thrown out of the replacer when stringify is about to re-enter an object it is still inside.
+const JSON_CYCLE = Symbol("pkc-logger-cycle");
+
 function boundedJson(arg: unknown, ctx: Ctx): string {
     let size = 0;
     let cut = false;
+    // The objects stringify is inside, outermost first. The replacer sees every value stringify is about to
+    // serialize (after toJSON, including array indices JSON reads whether enumerable or not), so a cycle is
+    // found exactly where stringify would hit it, without walking the value a second time.
+    const stack: object[] = [];
     const replacer = function (this: unknown, key: string, value: unknown): unknown {
         if (cut) return undefined;
+        while (stack.length > 0 && stack[stack.length - 1] !== this) stack.pop();
+        if (typeof value === "object" && value !== null) {
+            if (stack.includes(value)) throw JSON_CYCLE;
+            stack.push(value);
+        }
         if (ctx.used + size >= ctx.maxLength) {
             cut = true;
             return JSON_CUT;
@@ -231,33 +243,20 @@ function boundedJson(arg: unknown, ctx: Ctx): string {
         out = JSON.stringify(arg, replacer) ?? "undefined"; // functions, symbols, undefined: what util.format prints
     } catch (e) {
         // Same label util.format uses for a cycle; anything else (BigInt, a throwing toJSON) says what failed.
-        // Cycles are found by walking the value, since each engine words the cycle error differently.
-        if (hasCycle(arg)) return "[Circular]";
-        return `[Unserializable: ${e instanceof Error ? e.message : String(e)}]`;
+        if (e === JSON_CYCLE) return "[Circular]";
+        return `[Unserializable: ${describeError(e)}]`;
     }
     const at = out.indexOf(JSON_CUT_QUOTED);
     return at === -1 ? out : out.slice(0, at) + TRUNCATION_MARKER;
 }
 
-// Whether `value` reaches itself through own enumerable properties (what JSON.stringify walks). Bounded, and
-// never throws: a property that cannot be read is skipped.
-function hasCycle(value: unknown): boolean {
-    const ancestors = new Set<object>();
-    let budget = 10_000;
-    const walk = (v: unknown): boolean => {
-        if (typeof v !== "object" || v === null || budget-- <= 0) return false;
-        if (ancestors.has(v)) return true;
-        ancestors.add(v);
-        try {
-            for (const k of Object.keys(v)) if (walk(readProp(v, k))) return true;
-            return false;
-        } catch {
-            return false;
-        } finally {
-            ancestors.delete(v);
-        }
-    };
-    return walk(value);
+// The text of whatever a toJSON threw. It may be anything, including a value whose message or toString throws.
+function describeError(e: unknown): string {
+    try {
+        return e instanceof Error ? String(e.message) : String(e);
+    } catch {
+        return "error cannot be described";
+    }
 }
 
 /** Formats a log call's arguments into one bounded, color-free string. */

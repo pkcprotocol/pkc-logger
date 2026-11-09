@@ -185,7 +185,9 @@ test("an object whose then getter throws is still formatted", () => {
             throw new Error("nope");
         }
     };
-    assert.doesNotThrow(() => formatLogArgs(["x", obj]));
+    let out = "";
+    assert.doesNotThrow(() => (out = formatLogArgs(["x", obj])));
+    assert.match(out, /^x \{a: 1, then: /);
 });
 
 test("AggregateError shows its inner errors", () => {
@@ -201,8 +203,13 @@ test("%j detects cycles without relying on V8's error text", (t) => {
     const cyclic: Record<string, unknown> = {};
     cyclic.self = cyclic;
     // Firefox and Safari word the cycle error differently from V8.
-    t.mock.method(JSON, "stringify", () => {
-        throw new TypeError("cyclic object value");
+    const real = JSON.stringify;
+    t.mock.method(JSON, "stringify", (...args: Parameters<typeof JSON.stringify>) => {
+        try {
+            return real(...args);
+        } catch (e) {
+            throw e instanceof TypeError ? new TypeError("cyclic object value") : e;
+        }
     });
     assert.equal(formatLogArgs(["%j", cyclic]), "[Circular]");
 });
@@ -214,4 +221,68 @@ test("%j prints undefined for values JSON cannot represent, like util.format", (
     assert.equal(formatLogArgs(["cb=%j", handler]), "cb=undefined");
     assert.equal(formatLogArgs(["v=%j", { toJSON: () => undefined }]), "v=undefined");
     assert.equal(formatLogArgs(["v=%j", undefined]), "v=undefined");
+});
+
+test("%j keeps a toJSON error even when the value also has a cycle", () => {
+    const o: Record<string, unknown> = {
+        bad: {
+            toJSON() {
+                throw new Error("toJSON broke");
+            }
+        }
+    };
+    o.self = o;
+    assert.match(formatLogArgs(["%j", o]), /toJSON broke/);
+});
+
+test("%j never throws when a toJSON error cannot be turned into text", () => {
+    const thrown = [
+        {
+            toString() {
+                throw new Error("toString broke");
+            }
+        },
+        Object.defineProperty(new Error(), "message", {
+            get() {
+                throw new Error("message getter broke");
+            }
+        })
+    ];
+    for (const t of thrown) {
+        const v = {
+            toJSON() {
+                throw t;
+            }
+        };
+        let out = "";
+        assert.doesNotThrow(() => (out = formatLogArgs(["%j", v])));
+        assert.match(out, /^\[Unserializable/);
+    }
+});
+
+test("%j does not walk the whole value again after a toJSON error", () => {
+    let reads = 0;
+    const o: Record<string, unknown> = {
+        bad: {
+            toJSON() {
+                throw new Error("toJSON broke");
+            }
+        }
+    };
+    for (let i = 0; i < 1000; i++)
+        Object.defineProperty(o, `k${i}`, {
+            enumerable: true,
+            get() {
+                reads++;
+                return i;
+            }
+        });
+    formatLogArgs(["%j", o], { maxLength: 100 });
+    assert.equal(reads, 0);
+});
+
+test("%j labels a cycle through a non-enumerable array index [Circular]", () => {
+    const a: unknown[] = [];
+    Object.defineProperty(a, "0", { value: a, enumerable: false });
+    assert.equal(formatLogArgs(["%j", a]), "[Circular]");
 });
