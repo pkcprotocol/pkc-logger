@@ -33,7 +33,7 @@ export interface Logger {
     child(options: ChildOptions): Logger;
     /** Queries the root's buffer. Throws InvalidLogQueryError (code ERR_INVALID_LOG_QUERY) on a bad query. */
     getLogs(query?: LogQuery): LogQueryResult;
-    /** Receives every captured entry of the root. Returns the unsubscribe function. */
+    /** Receives every enabled entry of the root, including entries the buffer does not keep. Returns the unsubscribe function. */
     addListener(listener: LogListener): () => void;
     removeListener(listener: LogListener): void;
 }
@@ -41,6 +41,9 @@ export interface Logger {
 interface RootState {
     buffer: LogRingBuffer;
     listeners: Set<LogListener>;
+    // Listeners currently running. A listener that logs through the same root is not handed its own entries,
+    // which would otherwise recurse until the stack overflows and flood the buffer on the way.
+    delivering: Set<LogListener>;
 }
 
 // `debug` instances are stateless apart from their namespace, so one per namespace process-wide is enough
@@ -108,6 +111,8 @@ function buildLogger(root: RootState, namespace: string | undefined, ownTags: re
         if (tags.length > 0) d("[%s] %s", tags.join(", "), msg);
         else d("%s", msg);
         for (const listener of root.listeners) {
+            if (root.delivering.has(listener)) continue;
+            root.delivering.add(listener);
             try {
                 const result: unknown = listener(entry);
                 // An async listener rejects instead of throwing; swallow that too, or Node treats it as an
@@ -116,6 +121,8 @@ function buildLogger(root: RootState, namespace: string | undefined, ownTags: re
                     (result as PromiseLike<unknown>).then(undefined, () => {});
             } catch {
                 // a faulty sink must never break the code that logged
+            } finally {
+                root.delivering.delete(listener);
             }
         }
     };
@@ -146,7 +153,7 @@ function buildLogger(root: RootState, namespace: string | undefined, ownTags: re
 export function createLogger(options: CreateLoggerOptions = {}): Logger {
     validateChildOptions(options, "createLogger");
     const maxBytes = options.buffer?.maxBytes ?? DEFAULT_BUFFER_MAX_BYTES;
-    const root: RootState = { buffer: new LogRingBuffer(maxBytes), listeners: new Set() };
+    const root: RootState = { buffer: new LogRingBuffer(maxBytes), listeners: new Set(), delivering: new Set() };
     return buildLogger(root, options.namespace, mergeTags([], options.tags));
 }
 

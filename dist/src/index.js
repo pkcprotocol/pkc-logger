@@ -72,6 +72,9 @@ function buildLogger(root, namespace, ownTags) {
         else
             d("%s", msg);
         for (const listener of root.listeners) {
+            if (root.delivering.has(listener))
+                continue;
+            root.delivering.add(listener);
             try {
                 const result = listener(entry);
                 // An async listener rejects instead of throwing; swallow that too, or Node treats it as an
@@ -81,6 +84,9 @@ function buildLogger(root, namespace, ownTags) {
             }
             catch {
                 // a faulty sink must never break the code that logged
+            }
+            finally {
+                root.delivering.delete(listener);
             }
         }
     };
@@ -110,7 +116,7 @@ function buildLogger(root, namespace, ownTags) {
 export function createLogger(options = {}) {
     validateChildOptions(options, "createLogger");
     const maxBytes = options.buffer?.maxBytes ?? DEFAULT_BUFFER_MAX_BYTES;
-    const root = { buffer: new LogRingBuffer(maxBytes), listeners: new Set() };
+    const root = { buffer: new LogRingBuffer(maxBytes), listeners: new Set(), delivering: new Set() };
     return buildLogger(root, options.namespace, mergeTags([], options.tags));
 }
 // Process-default root for code with no instance in scope (CLI commands, tests, packages mid-migration).

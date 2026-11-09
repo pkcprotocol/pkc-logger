@@ -395,3 +395,16 @@ test("evicted entries are released, not kept until compaction", async () => {
     assert.ok(head > 0);
     for (let i = 0; i < head; i++) assert.equal(slots[i], undefined, `slot ${i} still holds an evicted entry`);
 });
+
+test("a listener that logs through the same root does not receive its own entries", () => {
+    const root = createLogger();
+    const sinkLog = root.child({ namespace: "my-app:sink" });
+    let calls = 0;
+    root.addListener((entry) => {
+        calls++;
+        sinkLog("saw", entry.seq);
+    });
+    root.child({ namespace: "my-app:app" })("hello");
+    assert.equal(calls, 1);
+    assert.deepEqual(root.getLogs().entries.map((e) => e.msg), ["hello", "saw 0"]);
+});

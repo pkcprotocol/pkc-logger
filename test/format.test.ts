@@ -177,3 +177,32 @@ test("numeric placeholders never throw on unconvertible values", () => {
         assert.equal(formatLogArgs([`n ${spec}`, Object.create(null)]), "n NaN");
     }
 });
+
+test("an object whose then getter throws is still formatted", () => {
+    const obj = {
+        a: 1,
+        get then(): unknown {
+            throw new Error("nope");
+        }
+    };
+    assert.doesNotThrow(() => formatLogArgs(["x", obj]));
+});
+
+test("AggregateError shows its inner errors", () => {
+    // Not in this project's TS lib, but present in every supported runtime (Node 15+).
+    const AggregateErrorCtor = (globalThis as unknown as { AggregateError: new (errors: unknown[], message: string) => Error }).AggregateError;
+    const err = new AggregateErrorCtor([new Error("first inner"), new Error("second inner")], "all failed");
+    const out = formatLogArgs([err]);
+    assert.match(out, /first inner/);
+    assert.match(out, /second inner/);
+});
+
+test("%j detects cycles without relying on V8's error text", (t) => {
+    const cyclic: Record<string, unknown> = {};
+    cyclic.self = cyclic;
+    // Firefox and Safari word the cycle error differently from V8.
+    t.mock.method(JSON, "stringify", () => {
+        throw new TypeError("cyclic object value");
+    });
+    assert.equal(formatLogArgs(["%j", cyclic]), "[Circular]");
+});

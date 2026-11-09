@@ -58,17 +58,26 @@ function inspectError(err: Error, depth: number, ctx: Ctx): string {
     const head = err.stack && err.stack.includes(err.message) ? err.stack : `${err.name}: ${err.message}${err.stack ? "\n" + err.stack : ""}`;
     // Own enumerable props beyond name/message/stack (e.g. a PKCError's code/details) are worth keeping.
     const extraKeys = Object.keys(err).filter((k) => k !== "name" && k !== "message" && k !== "stack");
-    if (extraKeys.length === 0 && !("cause" in err)) return head;
+    // AggregateError keeps its inner errors in a non-enumerable `errors` array; without it the details are lost.
+    const inner = extraKeys.includes("errors") ? undefined : readProp(err, "errors");
+    if (extraKeys.length === 0 && !("cause" in err) && !Array.isArray(inner)) return head;
     const extras: Record<string, unknown> = {};
     for (const k of extraKeys) extras[k] = readProp(err, k);
     if ("cause" in err) extras["cause"] = readProp(err, "cause");
+    if (Array.isArray(inner)) extras["errors"] = inner;
     return `${head} ${inspectValue(extras, depth, ctx)}`;
 }
 
 function inspectValue(value: unknown, depth: number, ctx: Ctx): string {
     if (value === GETTER_THREW) return charge(ctx, "[Getter threw]");
     if (spent(ctx)) return BUDGET_SPENT;
-    const out = inspectUncharged(value, depth, ctx);
+    let out: string;
+    try {
+        out = inspectUncharged(value, depth, ctx);
+    } catch {
+        // A Proxy trap (ownKeys, getPrototypeOf...) or another hostile object; a log call must not throw.
+        out = "[Uninspectable]";
+    }
     // Containers were already charged through their children (and keys); charging their joined text again
     // would count nested content once per level and cut deep objects short.
     if (typeof value !== "object" || value === null) charge(ctx, out);
@@ -108,7 +117,7 @@ function inspectUncharged(value: unknown, depth: number, ctx: Ctx): string {
     if (obj instanceof RegExp) return obj.toString();
     if (ArrayBuffer.isView(obj)) return `${obj.constructor.name}(${(obj as ArrayBufferView).byteLength})`;
     if (obj instanceof ArrayBuffer) return `ArrayBuffer(${obj.byteLength})`;
-    if (typeof (obj as { then?: unknown }).then === "function" && !Array.isArray(obj) && !(obj instanceof Map) && !(obj instanceof Set))
+    if (typeof readProp(obj, "then") === "function" && !Array.isArray(obj) && !(obj instanceof Map) && !(obj instanceof Set))
         return "[Promise]";
 
     if (ctx.seen.has(obj)) return "[Circular]";
@@ -222,11 +231,33 @@ function boundedJson(arg: unknown, ctx: Ctx): string {
         out = JSON.stringify(arg, replacer) ?? String(arg);
     } catch (e) {
         // Same label util.format uses for a cycle; anything else (BigInt, a throwing toJSON) says what failed.
-        const message = e instanceof Error ? e.message : String(e);
-        return /circular/i.test(message) ? "[Circular]" : `[Unserializable: ${message}]`;
+        // Cycles are found by walking the value, since each engine words the cycle error differently.
+        if (hasCycle(arg)) return "[Circular]";
+        return `[Unserializable: ${e instanceof Error ? e.message : String(e)}]`;
     }
     const at = out.indexOf(JSON_CUT_QUOTED);
     return at === -1 ? out : out.slice(0, at) + TRUNCATION_MARKER;
+}
+
+// Whether `value` reaches itself through own enumerable properties (what JSON.stringify walks). Bounded, and
+// never throws: a property that cannot be read is skipped.
+function hasCycle(value: unknown): boolean {
+    const ancestors = new Set<object>();
+    let budget = 10_000;
+    const walk = (v: unknown): boolean => {
+        if (typeof v !== "object" || v === null || budget-- <= 0) return false;
+        if (ancestors.has(v)) return true;
+        ancestors.add(v);
+        try {
+            for (const k of Object.keys(v)) if (walk(readProp(v, k))) return true;
+            return false;
+        } catch {
+            return false;
+        } finally {
+            ancestors.delete(v);
+        }
+    };
+    return walk(value);
 }
 
 /** Formats a log call's arguments into one bounded, color-free string. */
