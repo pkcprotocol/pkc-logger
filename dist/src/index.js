@@ -1,6 +1,6 @@
 import Debug from "debug";
 import { formatLogArgs } from "./format.js";
-import { LogRingBuffer, InvalidLogQueryError, INVALID_LOG_QUERY_CODE, DEFAULT_QUERY_LIMIT, MAX_QUERY_LIMIT } from "./ring-buffer.js";
+import { LogRingBuffer, isTagArray, InvalidLogQueryError, INVALID_LOG_QUERY_CODE, DEFAULT_QUERY_LIMIT, MAX_QUERY_LIMIT } from "./ring-buffer.js";
 export { InvalidLogQueryError, INVALID_LOG_QUERY_CODE, DEFAULT_QUERY_LIMIT, MAX_QUERY_LIMIT, formatLogArgs };
 export const DEFAULT_BUFFER_MAX_BYTES = 4 * 1024 * 1024;
 // `debug` instances are stateless apart from their namespace, so one per namespace process-wide is enough
@@ -44,7 +44,7 @@ function validateChildOptions(options, what) {
         throw new Error(`${what} options must be an object`);
     if (options.namespace !== undefined && (typeof options.namespace !== "string" || options.namespace.length === 0))
         throw new Error(`${what} namespace '${String(options.namespace)}' invalid`);
-    if (options.tags !== undefined && (!Array.isArray(options.tags) || options.tags.some((t) => typeof t !== "string" || t.length === 0)))
+    if (options.tags !== undefined && !isTagArray(options.tags))
         throw new Error(`${what} tags must be an array of non-empty strings`);
     if (options.listeners !== undefined && typeof options.listeners !== "boolean")
         throw new Error(`${what} listeners must be a boolean`);
@@ -134,9 +134,17 @@ function buildLogger(root, namespace, ownTags, delivers) {
     logger.addListener = (listener) => {
         if (typeof listener !== "function")
             throw new Error("listener must be a function");
-        if (!root.listeners.has(listener))
-            root.listeners.set(listener, { listener, removed: false });
-        return () => removeListener(root, listener);
+        let registration = root.listeners.get(listener);
+        if (!registration) {
+            registration = { listener, removed: false };
+            root.listeners.set(listener, registration);
+        }
+        // Removes only this registration, so a stale unsubscribe called again after a re-add is a no-op.
+        const own = registration;
+        return () => {
+            if (root.listeners.get(listener) === own)
+                removeListener(root, listener);
+        };
     };
     logger.removeListener = (listener) => removeListener(root, listener);
     return logger;
