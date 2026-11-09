@@ -228,7 +228,7 @@ function boundedJson(arg: unknown, ctx: Ctx): string {
     };
     let out: string;
     try {
-        out = JSON.stringify(arg, replacer) ?? String(arg);
+        out = JSON.stringify(arg, replacer) ?? "undefined"; // functions, symbols, undefined: what util.format prints
     } catch (e) {
         // Same label util.format uses for a cycle; anything else (BigInt, a throwing toJSON) says what failed.
         // Cycles are found by walking the value, since each engine words the cycle error differently.

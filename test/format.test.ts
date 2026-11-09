@@ -206,3 +206,12 @@ test("%j detects cycles without relying on V8's error text", (t) => {
     });
     assert.equal(formatLogArgs(["%j", cyclic]), "[Circular]");
 });
+
+test("%j prints undefined for values JSON cannot represent, like util.format", () => {
+    function handler() {
+        return "secret source";
+    }
+    assert.equal(formatLogArgs(["cb=%j", handler]), "cb=undefined");
+    assert.equal(formatLogArgs(["v=%j", { toJSON: () => undefined }]), "v=undefined");
+    assert.equal(formatLogArgs(["v=%j", undefined]), "v=undefined");
+});
