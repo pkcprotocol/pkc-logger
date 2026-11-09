@@ -17,6 +17,9 @@ export interface ChildOptions {
     namespace?: string;
     /** Identifier tags (cid, publicKey, signature...) added to the parent's. */
     tags?: string[];
+    /** `false` keeps this logger's entries (and its descendants') out of listeners; they still go to the buffer and `debug`.
+     * Use it for logging from inside a listener. A descendant cannot turn delivery back on. */
+    listeners?: boolean;
 }
 
 export interface CreateLoggerOptions extends ChildOptions {
@@ -40,6 +43,8 @@ export interface Logger {
 
 interface RootState {
     buffer: LogRingBuffer;
+    // Namespace of the entry recorded when a listener throws or rejects.
+    listenerErrorNamespace: string;
     listeners: Set<LogListener>;
     // Listeners currently running. A listener that logs through the same root is not handed its own entries,
     // which would otherwise recurse until the stack overflows and flood the buffer on the way.
@@ -90,6 +95,7 @@ function validateChildOptions(options: ChildOptions, what: string): void {
         throw new Error(`${what} namespace '${String(options.namespace)}' invalid`);
     if (options.tags !== undefined && (!Array.isArray(options.tags) || options.tags.some((t) => typeof t !== "string" || t.length === 0)))
         throw new Error(`${what} tags must be an array of non-empty strings`);
+    if (options.listeners !== undefined && typeof options.listeners !== "boolean") throw new Error(`${what} listeners must be a boolean`);
 }
 
 function mergeTags(parent: readonly string[], extra: string[] | undefined): string[] {
@@ -99,7 +105,38 @@ function mergeTags(parent: readonly string[], extra: string[] | undefined): stri
     return out;
 }
 
-function buildLogger(root: RootState, namespace: string | undefined, ownTags: readonly string[]): Logger {
+// Like a browser's EventTarget: a listener's error is reported and delivery goes on. The report is always buffered,
+// printed only when its namespace is enabled, and never delivered to a listener, so failing sinks cannot feed each other.
+function reportListenerError(root: RootState, error: unknown): void {
+    try {
+        const namespace = root.listenerErrorNamespace;
+        const msg = formatLogArgs(["uncaught error in listener:", error]);
+        root.buffer.push({ time: Date.now(), level: "error", namespace, msg, tags: Object.freeze([]) });
+        pickEnabled(namespace, "error")?.("%s", msg);
+    } catch {
+        // reporting must never break the code that logged
+    }
+}
+
+function deliver(root: RootState, entry: LogEntry): void {
+    for (const listener of root.listeners) {
+        if (root.delivering.has(listener)) continue;
+        root.delivering.add(listener);
+        try {
+            const result: unknown = listener(entry);
+            // An async listener rejects instead of throwing; catch that too, or Node treats it as an
+            // unhandled rejection and (by default) exits the process.
+            if (result && typeof (result as PromiseLike<unknown>).then === "function")
+                (result as PromiseLike<unknown>).then(undefined, (error: unknown) => reportListenerError(root, error));
+        } catch (error) {
+            reportListenerError(root, error);
+        } finally {
+            root.delivering.delete(listener);
+        }
+    }
+}
+
+function buildLogger(root: RootState, namespace: string | undefined, ownTags: readonly string[], delivers: boolean): Logger {
     // One frozen array shared by this logger and every entry it emits, so no consumer can mutate it.
     const tags = Object.freeze([...ownTags]);
     const emit = (level: LogLevel, args: unknown[]): void => {
@@ -110,21 +147,7 @@ function buildLogger(root: RootState, namespace: string | undefined, ownTags: re
         const entry = root.buffer.push({ time: Date.now(), level, namespace, msg, tags });
         if (tags.length > 0) d("[%s] %s", tags.join(", "), msg);
         else d("%s", msg);
-        for (const listener of root.listeners) {
-            if (root.delivering.has(listener)) continue;
-            root.delivering.add(listener);
-            try {
-                const result: unknown = listener(entry);
-                // An async listener rejects instead of throwing; swallow that too, or Node treats it as an
-                // unhandled rejection and (by default) exits the process.
-                if (result && typeof (result as PromiseLike<unknown>).then === "function")
-                    (result as PromiseLike<unknown>).then(undefined, () => {});
-            } catch {
-                // a faulty sink must never break the code that logged
-            } finally {
-                root.delivering.delete(listener);
-            }
-        }
+        if (delivers) deliver(root, entry);
     };
 
     const logger = ((...args: unknown[]) => emit("log", args)) as Logger;
@@ -135,7 +158,7 @@ function buildLogger(root: RootState, namespace: string | undefined, ownTags: re
     logger.child = (options: ChildOptions) => {
         validateChildOptions(options, "child");
         const childNamespace = namespace ? (options.namespace ? `${namespace}:${options.namespace}` : namespace) : options.namespace;
-        return buildLogger(root, childNamespace, mergeTags(tags, options.tags));
+        return buildLogger(root, childNamespace, mergeTags(tags, options.tags), delivers && options.listeners !== false);
     };
     logger.getLogs = (query?: LogQuery) => root.buffer.query(query);
     logger.addListener = (listener: LogListener) => {
@@ -153,8 +176,13 @@ function buildLogger(root: RootState, namespace: string | undefined, ownTags: re
 export function createLogger(options: CreateLoggerOptions = {}): Logger {
     validateChildOptions(options, "createLogger");
     const maxBytes = options.buffer?.maxBytes ?? DEFAULT_BUFFER_MAX_BYTES;
-    const root: RootState = { buffer: new LogRingBuffer(maxBytes), listeners: new Set(), delivering: new Set() };
-    return buildLogger(root, options.namespace, mergeTags([], options.tags));
+    const root: RootState = {
+        buffer: new LogRingBuffer(maxBytes),
+        listenerErrorNamespace: options.namespace ? `${options.namespace}:listener` : "pkc-logger:listener",
+        listeners: new Set(),
+        delivering: new Set(),
+    };
+    return buildLogger(root, options.namespace, mergeTags([], options.tags), options.listeners !== false);
 }
 
 // Process-default root for code with no instance in scope (CLI commands, tests, packages mid-migration).

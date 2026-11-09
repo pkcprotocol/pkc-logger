@@ -46,6 +46,8 @@ function validateChildOptions(options, what) {
         throw new Error(`${what} namespace '${String(options.namespace)}' invalid`);
     if (options.tags !== undefined && (!Array.isArray(options.tags) || options.tags.some((t) => typeof t !== "string" || t.length === 0)))
         throw new Error(`${what} tags must be an array of non-empty strings`);
+    if (options.listeners !== undefined && typeof options.listeners !== "boolean")
+        throw new Error(`${what} listeners must be a boolean`);
 }
 function mergeTags(parent, extra) {
     if (!extra || extra.length === 0)
@@ -56,7 +58,40 @@ function mergeTags(parent, extra) {
             out.push(t);
     return out;
 }
-function buildLogger(root, namespace, ownTags) {
+// Like a browser's EventTarget: a listener's error is reported and delivery goes on. The report is always buffered,
+// printed only when its namespace is enabled, and never delivered to a listener, so failing sinks cannot feed each other.
+function reportListenerError(root, error) {
+    try {
+        const namespace = root.listenerErrorNamespace;
+        const msg = formatLogArgs(["uncaught error in listener:", error]);
+        root.buffer.push({ time: Date.now(), level: "error", namespace, msg, tags: Object.freeze([]) });
+        pickEnabled(namespace, "error")?.("%s", msg);
+    }
+    catch {
+        // reporting must never break the code that logged
+    }
+}
+function deliver(root, entry) {
+    for (const listener of root.listeners) {
+        if (root.delivering.has(listener))
+            continue;
+        root.delivering.add(listener);
+        try {
+            const result = listener(entry);
+            // An async listener rejects instead of throwing; catch that too, or Node treats it as an
+            // unhandled rejection and (by default) exits the process.
+            if (result && typeof result.then === "function")
+                result.then(undefined, (error) => reportListenerError(root, error));
+        }
+        catch (error) {
+            reportListenerError(root, error);
+        }
+        finally {
+            root.delivering.delete(listener);
+        }
+    }
+}
+function buildLogger(root, namespace, ownTags, delivers) {
     // One frozen array shared by this logger and every entry it emits, so no consumer can mutate it.
     const tags = Object.freeze([...ownTags]);
     const emit = (level, args) => {
@@ -71,24 +106,8 @@ function buildLogger(root, namespace, ownTags) {
             d("[%s] %s", tags.join(", "), msg);
         else
             d("%s", msg);
-        for (const listener of root.listeners) {
-            if (root.delivering.has(listener))
-                continue;
-            root.delivering.add(listener);
-            try {
-                const result = listener(entry);
-                // An async listener rejects instead of throwing; swallow that too, or Node treats it as an
-                // unhandled rejection and (by default) exits the process.
-                if (result && typeof result.then === "function")
-                    result.then(undefined, () => { });
-            }
-            catch {
-                // a faulty sink must never break the code that logged
-            }
-            finally {
-                root.delivering.delete(listener);
-            }
-        }
+        if (delivers)
+            deliver(root, entry);
     };
     const logger = ((...args) => emit("log", args));
     logger.error = (...args) => emit("error", args);
@@ -98,7 +117,7 @@ function buildLogger(root, namespace, ownTags) {
     logger.child = (options) => {
         validateChildOptions(options, "child");
         const childNamespace = namespace ? (options.namespace ? `${namespace}:${options.namespace}` : namespace) : options.namespace;
-        return buildLogger(root, childNamespace, mergeTags(tags, options.tags));
+        return buildLogger(root, childNamespace, mergeTags(tags, options.tags), delivers && options.listeners !== false);
     };
     logger.getLogs = (query) => root.buffer.query(query);
     logger.addListener = (listener) => {
@@ -116,8 +135,13 @@ function buildLogger(root, namespace, ownTags) {
 export function createLogger(options = {}) {
     validateChildOptions(options, "createLogger");
     const maxBytes = options.buffer?.maxBytes ?? DEFAULT_BUFFER_MAX_BYTES;
-    const root = { buffer: new LogRingBuffer(maxBytes), listeners: new Set(), delivering: new Set() };
-    return buildLogger(root, options.namespace, mergeTags([], options.tags));
+    const root = {
+        buffer: new LogRingBuffer(maxBytes),
+        listenerErrorNamespace: options.namespace ? `${options.namespace}:listener` : "pkc-logger:listener",
+        listeners: new Set(),
+        delivering: new Set(),
+    };
+    return buildLogger(root, options.namespace, mergeTags([], options.tags), options.listeners !== false);
 }
 // Process-default root for code with no instance in scope (CLI commands, tests, packages mid-migration).
 // It prints but keeps no buffer; `getLogs` on it is always empty.

@@ -168,7 +168,10 @@ test("listeners receive exactly the captured entries, can unsubscribe, and may t
         seen.map((e) => e.msg),
         ["a", "b"]
     );
-    assert.deepEqual(root.getLogs().entries, seen);
+    // the faulty sink's errors are buffered too, but never delivered to a listener
+    const entries = root.getLogs().entries;
+    assert.deepEqual(entries.filter((e) => e.namespace !== "pkc-logger:listener"), seen);
+    assert.equal(entries.filter((e) => e.namespace === "pkc-logger:listener").length, 2);
     off();
     log("c");
     assert.equal(seen.length, 2);
@@ -407,4 +410,62 @@ test("a listener that logs through the same root does not receive its own entrie
     root.child({ namespace: "my-app:app" })("hello");
     assert.equal(calls, 1);
     assert.deepEqual(root.getLogs().entries.map((e) => e.msg), ["hello", "saw 0"]);
+});
+
+test("a failing listener is called once and its error is logged once, to no listener", async () => {
+    const root = createLogger();
+    let asyncCalls = 0;
+    let syncCalls = 0;
+    const seen: string[] = [];
+    root.addListener(async () => {
+        asyncCalls++;
+        await null;
+        throw new Error("async sink down");
+    });
+    root.addListener(() => {
+        syncCalls++;
+        throw new Error("sync sink down");
+    });
+    root.addListener((e) => seen.push(e.msg));
+    root.child({ namespace: "my-app:app" })("hello");
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(asyncCalls, 1);
+    assert.equal(syncCalls, 1);
+    assert.deepEqual(seen, ["hello"]);
+    const failures = root.getLogs().entries.filter((e) => e.namespace === "pkc-logger:listener");
+    assert.equal(failures.length, 2);
+    for (const f of failures) {
+        assert.equal(f.level, "error");
+        assert.match(f.msg, /^uncaught error in listener: /);
+    }
+    assert.ok(failures.some((f) => f.msg.includes("async sink down")));
+    assert.ok(failures.some((f) => f.msg.includes("sync sink down")));
+});
+
+test("a listener failure is buffered even when its namespace is disabled, under the root's namespace", () => {
+    Logger.enable("my-app:app");
+    const root = createLogger({ namespace: "my-app" });
+    root.addListener(() => {
+        throw new Error("down");
+    });
+    root.child({ namespace: "app" })("hello");
+    const failure = root.getLogs().entries.find((e) => e.namespace === "my-app:listener");
+    assert.ok(failure, "failure entry missing from the buffer");
+    assert.equal(printed.some((l) => l.includes("uncaught error in listener")), false);
+});
+
+test("an async sink logging after an await through a listeners:false child is not re-invoked", async () => {
+    const root = createLogger();
+    const sinkLog = root.child({ namespace: "my-app:sink", listeners: false });
+    const MAX = 20; // bound the loop so a regression fails instead of hanging the runner
+    let calls = 0;
+    root.addListener(async (entry) => {
+        calls++;
+        await null;
+        if (calls < MAX) sinkLog.child({ namespace: "inner" })("wrote", entry.seq);
+    });
+    root.child({ namespace: "my-app:app" })("hello");
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(calls, 1);
+    assert.deepEqual(root.getLogs().entries.map((e) => e.msg), ["hello", "wrote 0"]);
 });

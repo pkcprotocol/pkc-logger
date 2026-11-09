@@ -97,8 +97,34 @@ off();
 
 Listeners receive every enabled entry, including ones the buffer does not keep (buffer disabled with `maxBytes: 0`, or
 an entry too large to retain); those never show up in `getLogs()`. Entries are frozen, since the same object goes to
-every listener and into the buffer. A listener that throws, or an async listener that rejects, is ignored, so a faulty
-sink never breaks the code that logged. The default root exposes `Logger.addListener` / `Logger.removeListener`.
+every listener and into the buffer. The default root exposes `Logger.addListener` / `Logger.removeListener`.
+
+A listener that throws, or an async listener that rejects, never breaks the code that logged. As with a browser's
+`EventTarget`, the error is reported and delivery goes on: pkc-logger records one `error` entry,
+`uncaught error in listener: <error>`, on `<root namespace>:listener` (`pkc-logger:listener` for a root without a
+namespace). That entry is always buffered, printed only when its namespace is enabled, and never delivered to a listener.
+So a sink should let its errors escape rather than catch and log them:
+
+```js
+root.addListener(async (entry) => {
+    await fetch(url, { method: "POST", body: JSON.stringify(entry) }); // a failure is logged for you
+});
+```
+
+To log anything else from inside a listener, use a child created with `listeners: false`. Its entries (and its
+descendants') go to the buffer and `debug` but never to listeners:
+
+```js
+const sinkLog = root.child({ namespace: "my-app:sink", listeners: false });
+root.addListener(async (entry) => {
+    await appendFile(path, JSON.stringify(entry) + "\n");
+    sinkLog("wrote", entry.seq);
+});
+```
+
+**Do not log from an async listener through an ordinary logger of the same root.** A synchronous listener is never
+handed entries it logs while running, but after an `await` pkc-logger cannot tell the listener's own entries from
+anyone else's, so each one is delivered back to it and the listener loops forever.
 
 ## Static controls
 

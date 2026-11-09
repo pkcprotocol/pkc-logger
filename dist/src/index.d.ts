@@ -12,6 +12,9 @@ export interface ChildOptions {
     namespace?: string;
     /** Identifier tags (cid, publicKey, signature...) added to the parent's. */
     tags?: string[];
+    /** `false` keeps this logger's entries (and its descendants') out of listeners; they still go to the buffer and `debug`.
+     * Use it for logging from inside a listener. A descendant cannot turn delivery back on. */
+    listeners?: boolean;
 }
 export interface CreateLoggerOptions extends ChildOptions {
     /** `maxBytes` bounds the root's in-memory buffer. Default 4 MiB; 0 disables capture. */
