@@ -4,6 +4,9 @@ on:
     paths: ['package.json', 'package-lock.json', 'tsconfig.json', 'src/**', 'test/**', '.github/**']
   pull_request:
     paths: ['package.json', 'package-lock.json', 'tsconfig.json', 'src/**', 'test/**', '.github/**']
+  # Lets a release be started by hand (Actions > CI > Run workflow on master): a push that touches none of the
+  # paths above, such as a README-only change, runs no CI and therefore no release.
+  workflow_dispatch:
 jobs:
   test:
     runs-on: ubuntu-latest
