@@ -72,8 +72,12 @@ function reportListenerError(root, error) {
     }
 }
 function deliver(root, entry) {
-    for (const listener of root.listeners) {
-        if (root.delivering.has(listener))
+    if (root.listeners.size === 0)
+        return;
+    // Like dispatchEvent: listeners added during this delivery wait for the next entry.
+    for (const registration of Array.from(root.listeners.values())) {
+        const { listener } = registration;
+        if (registration.removed || root.delivering.has(listener))
             continue;
         root.delivering.add(listener);
         try {
@@ -90,6 +94,13 @@ function deliver(root, entry) {
             root.delivering.delete(listener);
         }
     }
+}
+function removeListener(root, listener) {
+    const registration = root.listeners.get(listener);
+    if (!registration)
+        return;
+    registration.removed = true;
+    root.listeners.delete(listener);
 }
 function buildLogger(root, namespace, ownTags, delivers) {
     // One frozen array shared by this logger and every entry it emits, so no consumer can mutate it.
@@ -123,12 +134,11 @@ function buildLogger(root, namespace, ownTags, delivers) {
     logger.addListener = (listener) => {
         if (typeof listener !== "function")
             throw new Error("listener must be a function");
-        root.listeners.add(listener);
-        return () => root.listeners.delete(listener);
+        if (!root.listeners.has(listener))
+            root.listeners.set(listener, { listener, removed: false });
+        return () => removeListener(root, listener);
     };
-    logger.removeListener = (listener) => {
-        root.listeners.delete(listener);
-    };
+    logger.removeListener = (listener) => removeListener(root, listener);
     return logger;
 }
 /** Creates a root logger with its own buffer and listener set. */
@@ -138,7 +148,7 @@ export function createLogger(options = {}) {
     const root = {
         buffer: new LogRingBuffer(maxBytes),
         listenerErrorNamespace: options.namespace ? `${options.namespace}:listener` : "pkc-logger:listener",
-        listeners: new Set(),
+        listeners: new Map(),
         delivering: new Set(),
     };
     return buildLogger(root, options.namespace, mergeTags([], options.tags), options.listeners !== false);

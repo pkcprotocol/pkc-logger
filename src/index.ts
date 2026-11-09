@@ -36,7 +36,11 @@ export interface Logger {
     child(options: ChildOptions): Logger;
     /** Queries the root's buffer. Throws InvalidLogQueryError (code ERR_INVALID_LOG_QUERY) on a bad query. */
     getLogs(query?: LogQuery): LogQueryResult;
-    /** Receives every enabled entry of the root, including entries the buffer does not keep. Returns the unsubscribe function. */
+    /**
+     * Receives the root's enabled entries, including entries the buffer does not keep, except: entries from loggers
+     * created with `listeners: false`, listener-error reports, and entries the listener itself logs while it runs.
+     * A listener added during a delivery starts with the next entry. Returns the unsubscribe function.
+     */
     addListener(listener: LogListener): () => void;
     removeListener(listener: LogListener): void;
 }
@@ -45,7 +49,9 @@ interface RootState {
     buffer: LogRingBuffer;
     // Namespace of the entry recorded when a listener throws or rejects.
     listenerErrorNamespace: string;
-    listeners: Set<LogListener>;
+    // One registration per listener, as in EventTarget: removing marks it removed, so a delivery already under
+    // way skips it, and adding it again creates a new registration that this delivery's snapshot does not hold.
+    listeners: Map<LogListener, { listener: LogListener; removed: boolean }>;
     // Listeners currently running. A listener that logs through the same root is not handed its own entries,
     // which would otherwise recurse until the stack overflows and flood the buffer on the way.
     delivering: Set<LogListener>;
@@ -119,8 +125,11 @@ function reportListenerError(root: RootState, error: unknown): void {
 }
 
 function deliver(root: RootState, entry: LogEntry): void {
-    for (const listener of root.listeners) {
-        if (root.delivering.has(listener)) continue;
+    if (root.listeners.size === 0) return;
+    // Like dispatchEvent: listeners added during this delivery wait for the next entry.
+    for (const registration of Array.from(root.listeners.values())) {
+        const { listener } = registration;
+        if (registration.removed || root.delivering.has(listener)) continue;
         root.delivering.add(listener);
         try {
             const result: unknown = listener(entry);
@@ -134,6 +143,13 @@ function deliver(root: RootState, entry: LogEntry): void {
             root.delivering.delete(listener);
         }
     }
+}
+
+function removeListener(root: RootState, listener: LogListener): void {
+    const registration = root.listeners.get(listener);
+    if (!registration) return;
+    registration.removed = true;
+    root.listeners.delete(listener);
 }
 
 function buildLogger(root: RootState, namespace: string | undefined, ownTags: readonly string[], delivers: boolean): Logger {
@@ -163,12 +179,10 @@ function buildLogger(root: RootState, namespace: string | undefined, ownTags: re
     logger.getLogs = (query?: LogQuery) => root.buffer.query(query);
     logger.addListener = (listener: LogListener) => {
         if (typeof listener !== "function") throw new Error("listener must be a function");
-        root.listeners.add(listener);
-        return () => root.listeners.delete(listener);
+        if (!root.listeners.has(listener)) root.listeners.set(listener, { listener, removed: false });
+        return () => removeListener(root, listener);
     };
-    logger.removeListener = (listener: LogListener) => {
-        root.listeners.delete(listener);
-    };
+    logger.removeListener = (listener: LogListener) => removeListener(root, listener);
     return logger;
 }
 
@@ -179,7 +193,7 @@ export function createLogger(options: CreateLoggerOptions = {}): Logger {
     const root: RootState = {
         buffer: new LogRingBuffer(maxBytes),
         listenerErrorNamespace: options.namespace ? `${options.namespace}:listener` : "pkc-logger:listener",
-        listeners: new Set(),
+        listeners: new Map(),
         delivering: new Set(),
     };
     return buildLogger(root, options.namespace, mergeTags([], options.tags), options.listeners !== false);

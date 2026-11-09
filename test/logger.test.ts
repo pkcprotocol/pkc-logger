@@ -469,3 +469,43 @@ test("an async sink logging after an await through a listeners:false child is no
     assert.equal(calls, 1);
     assert.deepEqual(root.getLogs().entries.map((e) => e.msg), ["hello", "wrote 0"]);
 });
+
+test("like EventTarget, listeners added or re-added during delivery wait for the next entry", () => {
+    const root = createLogger();
+    const log = root.child({ namespace: "my-app:snap" });
+    const calls: string[] = [];
+    const reAdded = (e: LogEntry) => calls.push(`reAdded ${e.msg}`);
+    const added = (e: LogEntry) => calls.push(`added ${e.msg}`);
+    root.addListener((e) => {
+        if (e.msg !== "one") return;
+        root.removeListener(reAdded);
+        root.addListener(reAdded);
+        root.addListener(added);
+    });
+    root.addListener(reAdded);
+    log("one");
+    log("two");
+    assert.deepEqual(calls, ["reAdded two", "added two"]);
+});
+
+test("like EventTarget, an entry logged inside a listener reaches later listeners first", () => {
+    // A nested dispatchEvent runs to completion before the outer one continues; delivery matches that.
+    const root = createLogger();
+    const sinkLog = root.child({ namespace: "my-app:nested" });
+    const order: number[] = [];
+    root.addListener((e) => {
+        if (e.seq === 0) sinkLog("nested");
+    });
+    root.addListener((e) => order.push(e.seq));
+    root.child({ namespace: "my-app:app" })("outer");
+    assert.deepEqual(order, [1, 0]);
+});
+
+test("a descendant cannot turn listener delivery back on", () => {
+    const root = createLogger();
+    let calls = 0;
+    root.addListener(() => calls++);
+    root.child({ namespace: "my-app:quiet", listeners: false }).child({ namespace: "loud", listeners: true })("x");
+    assert.equal(calls, 0);
+    assert.equal(root.getLogs().entries.length, 1);
+});

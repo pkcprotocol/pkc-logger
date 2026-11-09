@@ -95,8 +95,11 @@ const off = root.addListener((entry) => fileStream.write(JSON.stringify(entry) +
 off();
 ```
 
-Listeners receive every enabled entry, including ones the buffer does not keep (buffer disabled with `maxBytes: 0`, or
-an entry too large to retain); those never show up in `getLogs()`. Entries are frozen, since the same object goes to
+Listeners receive the root's enabled entries, including ones the buffer does not keep (buffer disabled with
+`maxBytes: 0`, or an entry too large to retain; those never show up in `getLogs()`). Three kinds of entry are not
+delivered: entries from loggers created with `listeners: false`, listener-error reports, and entries a listener logs
+while it is running (see below). As with `EventTarget`, a listener added or re-added during a delivery starts with the
+next entry, and an entry logged from inside a listener reaches the later listeners before the entry being delivered. Entries are frozen, since the same object goes to
 every listener and into the buffer. The default root exposes `Logger.addListener` / `Logger.removeListener`.
 
 A listener that throws, or an async listener that rejects, never breaks the code that logged. As with a browser's

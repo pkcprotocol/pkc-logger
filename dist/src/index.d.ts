@@ -31,7 +31,11 @@ export interface Logger {
     child(options: ChildOptions): Logger;
     /** Queries the root's buffer. Throws InvalidLogQueryError (code ERR_INVALID_LOG_QUERY) on a bad query. */
     getLogs(query?: LogQuery): LogQueryResult;
-    /** Receives every enabled entry of the root, including entries the buffer does not keep. Returns the unsubscribe function. */
+    /**
+     * Receives the root's enabled entries, including entries the buffer does not keep, except: entries from loggers
+     * created with `listeners: false`, listener-error reports, and entries the listener itself logs while it runs.
+     * A listener added during a delivery starts with the next entry. Returns the unsubscribe function.
+     */
     addListener(listener: LogListener): () => void;
     removeListener(listener: LogListener): void;
 }
