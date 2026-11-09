@@ -138,7 +138,8 @@ anyone else's, so each one is delivered back to it and the listener loops foreve
 
 `Logger.enable(namespaces)`, `Logger.disable()`, `Logger.enabled(namespaces)` forward to `debug` and are global.
 
-## Migrating from 0.1.0
+## Migrating from 0.1.x to 0.2.0
 
 - `Logger("my-app:thing")` is now `Logger({ namespace: "my-app:thing" })`. The old call throws with a hint.
 - Everything else is additive.
+- 0.1.2 shipped this breaking change as a patch release by mistake and is deprecated; use 0.2.0.
