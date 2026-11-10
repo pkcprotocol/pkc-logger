@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.3.0](https://github.com/pkcprotocol/pkc-logger/compare/v0.2.0...v0.3.0) (2026-11-10)
+
+### ⚠ BREAKING CHANGES
+
+* tags are Record<string, string> everywhere (child,
+createLogger, Logger, entry.tags, logger.tags, getLogs). The string[] form
+throws. getLogs({ tags }) matches by exact key and value instead of by
+value under any key, and printed lines show [key=value] pairs.
+
+### Features
+
+* keyed tags with live setTags through the parent chain ([#7](https://github.com/pkcprotocol/pkc-logger/issues/7)) ([b4e9350](https://github.com/pkcprotocol/pkc-logger/commit/b4e935078a9e1f3980f2083103241a9c35ba5e58)), closes [#6](https://github.com/pkcprotocol/pkc-logger/issues/6)
+
 ## [0.2.0](https://github.com/pkcprotocol/pkc-logger/compare/v0.1.2...v0.2.0) (2026-11-09)
 
 ### ⚠ BREAKING CHANGES
