@@ -1,4 +1,6 @@
 export type LogLevel = "log" | "error" | "trace";
+/** Identifier tags by name (`cid`, `publicKey`, `signature`...). Frozen wherever the logger hands one out. */
+export type Tags = Readonly<Record<string, string>>;
 /** Entries are frozen: the same object is buffered and handed to every listener and query caller. */
 export interface LogEntry {
     /** Monotonic per-root sequence number; the query cursor. */
@@ -9,12 +11,12 @@ export interface LogEntry {
     readonly namespace: string;
     /** Formatted message, color-free, capped (see format.ts). */
     readonly msg: string;
-    /** Identifier tags accumulated down the child chain, deduplicated. */
-    readonly tags: readonly string[];
+    /** The logger's effective tags when the line was emitted; a later `setTags` does not rewrite it. */
+    readonly tags: Tags;
 }
 export interface LogQuery {
-    /** Every listed tag must be present on the entry (AND). */
-    tags?: string[];
+    /** Every listed key must be present on the entry with exactly that value (AND). `{}` is no filter. */
+    tags?: Record<string, string>;
     /**
      * Tested against `namespace + " " + msg`. Trusted input: a backtracking pattern such as `(a+)+$` runs
      * synchronously and can block the process, so never accept one from an untrusted source.
@@ -47,11 +49,18 @@ export declare class InvalidLogQueryError extends Error {
     constructor(message: string);
 }
 export declare function entryCost(entry: LogEntry): number;
+/**
+ * Copies a tag record, reading each value once, so what was validated is what gets used. Returns undefined
+ * unless `value` is a plain object whose keys and values are non-empty strings. With `dropUndefined` a key
+ * whose value is undefined is left out (a logger's tags); a query passes false, because dropping a filter
+ * would silently widen it to the whole buffer.
+ */
+export declare function copyTagRecord(value: unknown, dropUndefined: boolean): Record<string, string> | undefined;
+/** Sets an own property even for a key like `__proto__`, which plain assignment would treat as the prototype. */
+export declare function defineTag(record: Record<string, string>, key: string, value: string): void;
 /** Validates a query and compiles its regex. Throws InvalidLogQueryError (code ERR_INVALID_LOG_QUERY). */
-/** An array of non-empty strings with no holes (`some` and `every` skip holes, so index every position). */
-export declare function isTagArray(value: unknown): value is string[];
 export declare function normalizeQuery(query: LogQuery | undefined): Required<Pick<LogQuery, "limit" | "order">> & {
-    tags: string[];
+    tags: [key: string, value: string][];
     regex?: RegExp;
     since?: number;
     until?: number;

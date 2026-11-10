@@ -1,17 +1,19 @@
 import { formatLogArgs } from "./format.js";
 import { InvalidLogQueryError, INVALID_LOG_QUERY_CODE, DEFAULT_QUERY_LIMIT, MAX_QUERY_LIMIT } from "./ring-buffer.js";
-import type { LogEntry, LogLevel, LogQuery, LogQueryResult } from "./ring-buffer.js";
-export type { LogEntry, LogLevel, LogQuery, LogQueryResult };
+import type { LogEntry, LogLevel, LogQuery, LogQueryResult, Tags } from "./ring-buffer.js";
+export type { LogEntry, LogLevel, LogQuery, LogQueryResult, Tags };
 export { InvalidLogQueryError, INVALID_LOG_QUERY_CODE, DEFAULT_QUERY_LIMIT, MAX_QUERY_LIMIT, formatLogArgs };
 export type { FormatOptions } from "./format.js";
 export declare const DEFAULT_BUFFER_MAX_BYTES: number;
+/** Tags as a caller passes them: a key whose value is undefined is dropped, so optional fields need no branching. */
+export type TagsInput = Record<string, string | undefined>;
 /** A returned promise is awaited for rejection only, so an async sink that fails cannot crash the process. */
 export type LogListener = (entry: LogEntry) => unknown;
 export interface ChildOptions {
     /** Appended to the parent's namespace with a colon; absolute when the parent has none. */
     namespace?: string;
-    /** Identifier tags (cid, publicKey, signature...) added to the parent's. */
-    tags?: string[];
+    /** This logger's own identifier tags (cid, publicKey, signature...), merged over its ancestors'. */
+    tags?: TagsInput;
     /** `false` keeps this logger's entries (and its descendants') out of listeners; they still go to the buffer and `debug`.
      * Use it for logging from inside a listener. A descendant cannot turn delivery back on. */
     listeners?: boolean;
@@ -27,7 +29,17 @@ export interface Logger {
     error: (...args: unknown[]) => void;
     trace: (...args: unknown[]) => void;
     readonly namespace: string | undefined;
-    readonly tags: readonly string[];
+    /**
+     * Effective tags: every ancestor's merged, then this logger's own, so a key set here shadows an ancestor's.
+     * Live: it reflects the latest `setTags` on this logger and on any ancestor. The returned record is frozen.
+     */
+    readonly tags: Tags;
+    /**
+     * Replaces this logger's OWN tags (it does not merge). Ancestors are untouched; this logger and every
+     * descendant, including ones created before the call, use the new tags from their next line. Pass the whole
+     * record built from your own fields, never a spread of `logger.tags`, which would copy ancestor keys down.
+     */
+    setTags(tags: TagsInput): void;
     child(options: ChildOptions): Logger;
     /** Queries the root's buffer. Throws InvalidLogQueryError (code ERR_INVALID_LOG_QUERY) on a bad query. */
     getLogs(query?: LogQuery): LogQueryResult;

@@ -28,20 +28,21 @@ test("Logger({ namespace }) requires a namespace and validates options", () => {
     // @ts-expect-error namespace is required
     assert.throws(() => Logger({}), /requires a namespace/);
     assert.throws(() => Logger({ namespace: "" }), /invalid/);
-    assert.throws(() => Logger({ namespace: "a", tags: [""] }), /tags must be/);
+    assert.throws(() => Logger({ namespace: "a", tags: { cid: "" } }), /Logger tags must be/);
 });
 
-test("child namespaces concatenate with a colon and tags accumulate, deduplicated", () => {
+test("child namespaces concatenate with a colon and tags merge down the chain", () => {
     const root = createLogger();
     assert.equal(root.namespace, undefined);
-    const community = root.child({ namespace: "pkc-js:local-community", tags: ["PK1"] });
-    const update = community.child({ namespace: "update", tags: ["PK1", "CID1"] });
-    const same = update.child({ tags: ["CID1"] });
+    assert.deepEqual(root.tags, {});
+    const community = root.child({ namespace: "pkc-js:local-community", tags: { publicKey: "PK1" } });
+    const update = community.child({ namespace: "update", tags: { cid: "CID1" } });
+    const same = update.child({});
     assert.equal(community.namespace, "pkc-js:local-community");
     assert.equal(update.namespace, "pkc-js:local-community:update");
     assert.equal(same.namespace, "pkc-js:local-community:update");
-    assert.deepEqual([...update.tags], ["PK1", "CID1"]);
-    assert.deepEqual([...same.tags], ["PK1", "CID1"]);
+    assert.deepEqual(update.tags, { publicKey: "PK1", cid: "CID1" });
+    assert.deepEqual(same.tags, { publicKey: "PK1", cid: "CID1" });
     assert.ok(Object.isFrozen(update.tags));
 });
 
@@ -53,7 +54,7 @@ test("a namespace-less root cannot log directly", () => {
 test("disabled namespaces format nothing, capture nothing, notify nobody", () => {
     Logger.disable();
     const root = createLogger();
-    const log = root.child({ namespace: "my-app:quiet", tags: ["T"] });
+    const log = root.child({ namespace: "my-app:quiet", tags: { t: "T" } });
     let listened = 0;
     root.addListener(() => listened++);
     // The formatter reads `then` on every object (promise detection), so this getter observes formatting.
@@ -79,7 +80,7 @@ test("disabled namespaces format nothing, capture nothing, notify nobody", () =>
 
 test("enabled lines become entries with the level of the method called", () => {
     const root = createLogger();
-    const log = root.child({ namespace: "my-app:thing", tags: ["PK1"] });
+    const log = root.child({ namespace: "my-app:thing", tags: { publicKey: "PK1" } });
     const before = Date.now();
     log("one", { a: 1 });
     log.error("two");
@@ -96,7 +97,7 @@ test("enabled lines become entries with the level of the method called", () => {
     );
     for (const e of entries) {
         assert.equal(e.namespace, "my-app:thing");
-        assert.deepEqual(e.tags, ["PK1"]);
+        assert.deepEqual(e.tags, { publicKey: "PK1" });
         assert.ok(e.time >= before && e.time <= Date.now());
     }
     assert.deepEqual(
@@ -136,10 +137,10 @@ test("the level cascade matches 0.1.0", () => {
 
 test("printed lines keep the debug look and show tags in brackets after the namespace", () => {
     const root = createLogger();
-    root.child({ namespace: "my-app:print", tags: ["PK1", "CID1"] })("hello %s", "there", { n: 1 });
+    root.child({ namespace: "my-app:print", tags: { publicKey: "PK1", cid: "CID1" } })("hello %s", "there", { n: 1 });
     root.child({ namespace: "my-app:print" })("no tags");
     assert.equal(printed.length, 2);
-    assert.match(printed[0]!, /my-app:print \[PK1, CID1\] hello there \{n: 1\}/);
+    assert.match(printed[0]!, /my-app:print \[publicKey=PK1, cid=CID1\] hello there \{n: 1\}/);
     assert.match(printed[1]!, /my-app:print no tags/);
     assert.doesNotMatch(printed[1]!, /\[/);
 });
@@ -183,14 +184,14 @@ test("listeners receive exactly the captured entries, can unsubscribe, and may t
 });
 
 test("the process-default root prints but keeps no buffer", () => {
-    const log = Logger({ namespace: "my-app:default", tags: ["X"] });
+    const log = Logger({ namespace: "my-app:default", tags: { x: "X" } });
     const seen: string[] = [];
     const off = Logger.addListener((e) => seen.push(e.msg));
     log("hello");
     off();
     log("after");
     assert.equal(printed.length, 2);
-    assert.match(printed[0]!, /my-app:default \[X\] hello/);
+    assert.match(printed[0]!, /my-app:default \[x=X\] hello/);
     assert.deepEqual(seen, ["hello"]);
     assert.deepEqual(log.getLogs().entries, []);
 });
@@ -225,9 +226,9 @@ test("the buffer evicts oldest entries to stay under maxBytes", () => {
 
 function seed() {
     const root = createLogger();
-    const a = root.child({ namespace: "my-app:a", tags: ["PK1"] });
-    const b = root.child({ namespace: "my-app:b", tags: ["PK2", "CID1"] });
-    const ab = root.child({ namespace: "my-app:a:b", tags: ["PK1", "CID1"] });
+    const a = root.child({ namespace: "my-app:a", tags: { publicKey: "PK1" } });
+    const b = root.child({ namespace: "my-app:b", tags: { publicKey: "PK2", cid: "CID1" } });
+    const ab = root.child({ namespace: "my-app:a:b", tags: { publicKey: "PK1", cid: "CID1" } });
     a("alpha one");
     b("beta two");
     ab("gamma three");
@@ -235,17 +236,24 @@ function seed() {
     return root;
 }
 
-test("query by tags is AND", () => {
+test("query by tags matches exact key and value, AND over the listed keys", () => {
     const root = seed();
     assert.deepEqual(
-        root.getLogs({ tags: ["PK1"] }).entries.map((e) => e.msg),
+        root.getLogs({ tags: { publicKey: "PK1" } }).entries.map((e) => e.msg),
         ["alpha one", "gamma three", "alpha failed"]
     );
     assert.deepEqual(
-        root.getLogs({ tags: ["PK1", "CID1"] }).entries.map((e) => e.msg),
+        root.getLogs({ tags: { publicKey: "PK1", cid: "CID1" } }).entries.map((e) => e.msg),
         ["gamma three"]
     );
-    assert.deepEqual(root.getLogs({ tags: ["PK3"] }), { entries: [] });
+    assert.deepEqual(root.getLogs({ tags: { publicKey: "PK3" } }), { entries: [] });
+    // the same value under another key does not match
+    assert.deepEqual(root.getLogs({ tags: { parentCid: "CID1" } }), { entries: [] });
+    assert.deepEqual(root.getLogs({ tags: { cid: "PK1" } }), { entries: [] });
+    // an empty record is no filter
+    assert.equal(root.getLogs({ tags: {} }).entries.length, 4);
+    // a name every object inherits is not a tag
+    assert.deepEqual(root.getLogs({ tags: { constructor: "Object" } }), { entries: [] });
 });
 
 test("query by regex tests namespace and message", () => {
@@ -317,7 +325,13 @@ test("invalid queries throw ERR_INVALID_LOG_QUERY before scanning", () => {
         [{ regex: { source: "(" } }, /invalid regex/],
         [{ regex: "x" }, /regex must be/],
         [{ tags: "PK1" }, /tags must be/],
-        [{ tags: [1] }, /tags must be/],
+        [{ tags: ["PK1"] }, /tags must be/],
+        [{ tags: { cid: undefined } }, /tags must be/],
+        [{ tags: { cid: null } }, /tags must be/],
+        [{ tags: { cid: "" } }, /tags must be/],
+        [{ tags: { cid: 1 } }, /tags must be/],
+        [{ tags: { "": "CID1" } }, /tags must be/],
+        [{ tags: new Map([["cid", "CID1"]]) }, /tags must be/],
         [{ limit: 0 }, /limit must be/],
         [{ limit: 1.5 }, /limit must be/],
         [{ cursor: -1 }, /cursor must be/],
@@ -331,7 +345,7 @@ test("invalid queries throw ERR_INVALID_LOG_QUERY before scanning", () => {
         assert.throws(
             () => root.getLogs(q as never),
             (err: unknown) => err instanceof InvalidLogQueryError && (err as InvalidLogQueryError).code === "ERR_INVALID_LOG_QUERY" && re.test((err as Error).message),
-            `expected ${re} for ${JSON.stringify(q)}`
+            `expected ${re} for ${format("%o", q)}`
         );
     }
 });
@@ -357,10 +371,10 @@ test("a rejecting async listener does not cause an unhandled rejection", async (
 
 test("mutating a delivered entry does not change the logger's tags or buffered history", () => {
     const root = createLogger();
-    const log = root.child({ namespace: "my-app:m", tags: ["PK1"] });
+    const log = root.child({ namespace: "my-app:m", tags: { publicKey: "PK1" } });
     root.addListener((entry) => {
         try {
-            (entry.tags as string[]).push("EVIL");
+            (entry.tags as Record<string, string>).evil = "EVIL";
         } catch {
             // frozen: fine
         }
@@ -368,13 +382,13 @@ test("mutating a delivered entry does not change the logger's tags or buffered h
     log("one");
     const [first] = root.getLogs().entries;
     try {
-        (first!.tags as string[]).push("EVIL2");
+        (first!.tags as Record<string, string>).publicKey = "EVIL2";
     } catch {
         // frozen: fine
     }
     log("two");
-    for (const e of root.getLogs().entries) assert.deepEqual(e.tags, ["PK1"]);
-    assert.deepEqual(log.tags, ["PK1"]);
+    for (const e of root.getLogs().entries) assert.deepEqual(e.tags, { publicKey: "PK1" });
+    assert.deepEqual(log.tags, { publicKey: "PK1" });
 });
 
 test("query by an until bound returns exactly the entries at or before it", (t) => {
@@ -392,7 +406,7 @@ test("query by an until bound returns exactly the entries at or before it", (t) 
 test("evicted entries are released, not kept until compaction", async () => {
     const { LogRingBuffer } = await import("../src/ring-buffer.js");
     const buf = new LogRingBuffer(2000);
-    for (let i = 0; i < 100; i++) buf.push({ time: i, level: "log", namespace: "n", msg: "x".repeat(50), tags: [] });
+    for (let i = 0; i < 100; i++) buf.push({ time: i, level: "log", namespace: "n", msg: "x".repeat(50), tags: {} });
     const slots = (buf as unknown as { entries: (LogEntry | undefined)[] }).entries;
     const head = (buf as unknown as { head: number }).head;
     assert.ok(head > 0);
@@ -523,12 +537,16 @@ test("a stale unsubscribe function does not remove a newer subscription", () => 
     assert.deepEqual(seen, ["still subscribed"]);
 });
 
-test("sparse tag arrays are rejected, not thrown out of a later log call", () => {
+test("the 0.2.0 string[] tags are rejected everywhere, not thrown out of a later log call", () => {
     const root = createLogger();
-    // eslint-disable-next-line no-sparse-arrays
-    assert.throws(() => root.child({ namespace: "my-app:sparse", tags: [, "a"] as string[] }), /tags must be/);
-    // eslint-disable-next-line no-sparse-arrays
-    assert.throws(() => root.getLogs({ tags: [, "a"] as string[] }), InvalidLogQueryError);
+    // @ts-expect-error tags are a record since 0.3.0
+    assert.throws(() => root.child({ namespace: "my-app:array", tags: ["a"] }), /child tags must be/);
+    // @ts-expect-error tags are a record since 0.3.0
+    assert.throws(() => createLogger({ tags: ["a"] }), /createLogger tags must be/);
+    // @ts-expect-error tags are a record since 0.3.0
+    assert.throws(() => root.setTags(["a"]), /setTags tags must be/);
+    // @ts-expect-error tags are a record since 0.3.0
+    assert.throws(() => root.getLogs({ tags: ["a"] }), InvalidLogQueryError);
 });
 
 test("null query fields are rejected instead of falling back to defaults", () => {
@@ -554,13 +572,13 @@ test("a sticky regex matches only at the start, on every entry", () => {
     assert.equal(global, 3);
 });
 
-test("query tags are read once, so a changing array cannot skip validation", () => {
+test("query tags are read once, so a changing record cannot skip validation", () => {
     const root = createLogger();
-    root.child({ namespace: "my-app:t", tags: ["A"] })("x");
+    root.child({ namespace: "my-app:t", tags: { a: "A" } })("x");
     let reads = 0;
-    const tags = new Proxy(["A"], {
+    const tags = new Proxy({ a: "A" } as Record<string, string>, {
         get(target, key, receiver) {
-            if (key === "0") return reads++ === 0 ? "A" : undefined;
+            if (key === "a") return reads++ === 0 ? "A" : undefined;
             return Reflect.get(target, key, receiver);
         }
     });
@@ -575,4 +593,164 @@ test("query tags are read once, so a changing array cannot skip validation", () 
 
 test("getLogs(null) is rejected", () => {
     assert.throws(() => createLogger().getLogs(null as never), InvalidLogQueryError);
+});
+
+// --- keyed, live tags (0.3.0) ---
+
+test("a child key shadows an ancestor's same key, and the ancestor's value is absent from the child's entry", () => {
+    const root = createLogger();
+    const post = root.child({ namespace: "my-app:comment", tags: { publicKey: "PK1", cid: "POST" } });
+    const reply = post.child({ namespace: "reply", tags: { cid: "REPLY" } });
+    const both = post.child({ namespace: "reply", tags: { replyCid: "REPLY" } });
+    assert.deepEqual(reply.tags, { publicKey: "PK1", cid: "REPLY" });
+    assert.deepEqual(post.tags, { publicKey: "PK1", cid: "POST" });
+    reply("shadowed");
+    both("distinct key");
+    assert.deepEqual(root.getLogs({ tags: { cid: "POST" } }).entries.map((e) => e.msg), ["distinct key"]);
+    assert.deepEqual(root.getLogs({ tags: { cid: "REPLY" } }).entries.map((e) => e.msg), ["shadowed"]);
+    assert.match(printed[0]!, /\[publicKey=PK1, cid=REPLY\] shadowed/);
+    assert.match(printed[1]!, /\[publicKey=PK1, cid=POST, replyCid=REPLY\] distinct key/);
+});
+
+test("setTags reaches the logger and children created before the call; ancestors are untouched", () => {
+    const root = createLogger({ tags: { app: "A" } });
+    const community = root.child({ namespace: "my-app:community", tags: { publicKey: "PK1" } });
+    const helper = community.child({ namespace: "db" });
+    const deep = helper.child({ namespace: "query", tags: { table: "comments" } });
+    helper("before");
+    community.setTags({ publicKey: "PK2" });
+    community("renamed");
+    helper("after");
+    deep("deep");
+    assert.deepEqual(community.tags, { app: "A", publicKey: "PK2" });
+    assert.deepEqual(helper.tags, { app: "A", publicKey: "PK2" });
+    assert.deepEqual(deep.tags, { app: "A", publicKey: "PK2", table: "comments" });
+    assert.deepEqual(root.tags, { app: "A" });
+    assert.deepEqual(
+        root.getLogs().entries.map((e) => [e.msg, e.tags]),
+        [
+            ["before", { app: "A", publicKey: "PK1" }],
+            ["renamed", { app: "A", publicKey: "PK2" }],
+            ["after", { app: "A", publicKey: "PK2" }],
+            ["deep", { app: "A", publicKey: "PK2", table: "comments" }]
+        ]
+    );
+    assert.match(printed[2]!, /my-app:community:db \[app=A, publicKey=PK2\] after/);
+});
+
+test("setTags replaces the own record: an omitted key is gone, an inherited one stays", () => {
+    const root = createLogger();
+    const parent = root.child({ namespace: "my-app:p", tags: { publicKey: "PK1" } });
+    const log = parent.child({ tags: { signature: "SIG", cid: "CID1" } });
+    log.setTags({ signature: "SIG" });
+    assert.deepEqual(log.tags, { publicKey: "PK1", signature: "SIG" });
+    log.setTags({});
+    assert.deepEqual(log.tags, { publicKey: "PK1" });
+    log("no own tags");
+    assert.deepEqual(root.getLogs().entries[0]!.tags, { publicKey: "PK1" });
+});
+
+test("undefined tag values are dropped: not on the entry, not printed", () => {
+    const root = createLogger();
+    const log = root.child({ namespace: "my-app:pub", tags: { signature: "SIG", cid: undefined } });
+    assert.deepEqual(log.tags, { signature: "SIG" });
+    assert.deepEqual(Object.keys(log.tags), ["signature"]);
+    log("unpublished");
+    log.setTags({ signature: "SIG", cid: "CID1" });
+    log("published");
+    log.setTags({ signature: undefined, cid: undefined });
+    log("cleared");
+    assert.deepEqual(
+        root.getLogs().entries.map((e) => e.tags),
+        [{ signature: "SIG" }, { signature: "SIG", cid: "CID1" }, {}]
+    );
+    assert.match(printed[0]!, /my-app:pub \[signature=SIG\] unpublished/);
+    assert.match(printed[1]!, /my-app:pub \[signature=SIG, cid=CID1\] published/);
+    assert.match(printed[2]!, /my-app:pub cleared/);
+    assert.doesNotMatch(printed[2]!, /\[/);
+});
+
+test("buffered entries keep the tags they were emitted with", () => {
+    const root = createLogger();
+    const log = root.child({ namespace: "my-app:frozen", tags: { cid: "OLD" } });
+    log("one");
+    const before = root.getLogs().entries[0]!;
+    log.setTags({ cid: "NEW" });
+    log("two");
+    assert.deepEqual(before.tags, { cid: "OLD" });
+    assert.deepEqual(root.getLogs({ tags: { cid: "OLD" } }).entries.map((e) => e.msg), ["one"]);
+    assert.deepEqual(root.getLogs({ tags: { cid: "NEW" } }).entries.map((e) => e.msg), ["two"]);
+    assert.ok(Object.isFrozen(before.tags));
+    assert.ok(Object.isFrozen(log.tags));
+});
+
+test("the caller's record is copied, so mutating it later changes nothing", () => {
+    const root = createLogger();
+    const given: Record<string, string> = { cid: "CID1" };
+    const log = root.child({ namespace: "my-app:copy", tags: given });
+    given.cid = "EVIL";
+    assert.deepEqual(log.tags, { cid: "CID1" });
+    const next: Record<string, string> = { cid: "CID2" };
+    log.setTags(next);
+    next.cid = "EVIL";
+    assert.deepEqual(log.tags, { cid: "CID2" });
+});
+
+test("a setTags elsewhere leaves an unrelated logger's record the same object", () => {
+    const root = createLogger();
+    const a = root.child({ namespace: "my-app:a", tags: { cid: "A" } });
+    const b = root.child({ namespace: "my-app:b", tags: { cid: "B" } });
+    const bChild = b.child({ namespace: "helper" });
+    const otherRoot = createLogger().child({ namespace: "my-app:other", tags: { cid: "O" } });
+    const [bTags, otherTags] = [b.tags, otherRoot.tags];
+    // a logger with no tags of its own shares its parent's record
+    assert.equal(bChild.tags, bTags);
+    a.setTags({ cid: "A2" });
+    assert.equal(b.tags, bTags);
+    assert.equal(bChild.tags, bTags);
+    assert.equal(otherRoot.tags, otherTags);
+    b("x");
+    b("y");
+    const [x, y] = root.getLogs().entries;
+    assert.equal(x!.tags, bTags);
+    assert.equal(y!.tags, bTags);
+    // setting the same tags again keeps the record too
+    b.setTags({ cid: "B" });
+    assert.equal(b.tags, bTags);
+    b.setTags({ cid: "B2" });
+    assert.notEqual(b.tags, bTags);
+});
+
+test("a __proto__ key is stored, printed and queried as an ordinary key", () => {
+    const root = createLogger();
+    const tags = JSON.parse('{"__proto__":"P","cid":"CID1"}') as Record<string, string>;
+    const log = root.child({ namespace: "my-app:proto", tags });
+    const child = log.child({ tags: { other: "O" } });
+    child("hello");
+    assert.deepEqual(Object.keys(child.tags), ["__proto__", "cid", "other"]);
+    assert.equal(Object.getPrototypeOf(child.tags), Object.prototype);
+    assert.match(printed[0]!, /\[__proto__=P, cid=CID1, other=O\] hello/);
+    assert.equal(root.getLogs({ tags: JSON.parse('{"__proto__":"P"}') as Record<string, string> }).entries.length, 1);
+    assert.equal(root.getLogs({ tags: JSON.parse('{"__proto__":"X"}') as Record<string, string> }).entries.length, 0);
+});
+
+test("invalid tags throw from child, createLogger and setTags, and leave the logger unchanged", () => {
+    const root = createLogger();
+    const log = root.child({ namespace: "my-app:valid", tags: { cid: "CID1" } });
+    const bad: unknown[] = ["cid", 1, null, ["a"], { cid: "" }, { cid: 1 }, { cid: null }, { "": "x" }, new Map([["cid", "x"]])];
+    for (const tags of bad) {
+        const what = format("%o", tags);
+        assert.throws(() => root.child({ namespace: "my-app:bad", tags: tags as never }), /child tags must be/, what);
+        assert.throws(() => createLogger({ tags: tags as never }), /createLogger tags must be/, what);
+        assert.throws(() => log.setTags(tags as never), /setTags tags must be/, what);
+    }
+    assert.throws(() => log.setTags(undefined as never), /setTags tags must be/);
+    assert.deepEqual(log.tags, { cid: "CID1" });
+});
+
+test("buffer cost counts tag keys and values", async () => {
+    const { entryCost } = await import("../src/ring-buffer.js");
+    const base = { seq: 0, time: 0, level: "log", namespace: "n", msg: "m" } as const;
+    const bare = entryCost({ ...base, tags: {} });
+    assert.equal(entryCost({ ...base, tags: { cid: "12345", parentCid: "1" } }), bare + "cid".length + 5 + "parentCid".length + 1);
 });
