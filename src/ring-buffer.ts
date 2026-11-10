@@ -1,5 +1,8 @@
 export type LogLevel = "log" | "error" | "trace";
 
+/** Identifier tags by name (`cid`, `publicKey`, `signature`...). Frozen wherever the logger hands one out. */
+export type Tags = Readonly<Record<string, string>>;
+
 /** Entries are frozen: the same object is buffered and handed to every listener and query caller. */
 export interface LogEntry {
     /** Monotonic per-root sequence number; the query cursor. */
@@ -10,13 +13,13 @@ export interface LogEntry {
     readonly namespace: string;
     /** Formatted message, color-free, capped (see format.ts). */
     readonly msg: string;
-    /** Identifier tags accumulated down the child chain, deduplicated. */
-    readonly tags: readonly string[];
+    /** The logger's effective tags when the line was emitted; a later `setTags` does not rewrite it. */
+    readonly tags: Tags;
 }
 
 export interface LogQuery {
-    /** Every listed tag must be present on the entry (AND). */
-    tags?: string[];
+    /** Every listed key must be present on the entry with exactly that value (AND). `{}` is no filter. */
+    tags?: Record<string, string>;
     /**
      * Tested against `namespace + " " + msg`. Trusted input: a backtracking pattern such as `(a+)+$` runs
      * synchronously and can block the process, so never accept one from an untrusted source.
@@ -57,7 +60,7 @@ const ENTRY_FIXED_COST = 64;
 
 export function entryCost(entry: LogEntry): number {
     let cost = ENTRY_FIXED_COST + entry.msg.length + entry.namespace.length;
-    for (const t of entry.tags) cost += t.length;
+    for (const key of Object.keys(entry.tags)) cost += key.length + entry.tags[key]!.length;
     return cost;
 }
 
@@ -65,19 +68,35 @@ function isNonNegativeInt(v: unknown): v is number {
     return typeof v === "number" && Number.isInteger(v) && v >= 0;
 }
 
-/** Validates a query and compiles its regex. Throws InvalidLogQueryError (code ERR_INVALID_LOG_QUERY). */
-/** An array of non-empty strings with no holes (`some` and `every` skip holes, so index every position). */
-export function isTagArray(value: unknown): value is string[] {
-    if (!Array.isArray(value)) return false;
-    for (let i = 0; i < value.length; i++) {
-        const t: unknown = value[i];
-        if (typeof t !== "string" || t.length === 0) return false;
+/**
+ * Copies a tag record, reading each value once, so what was validated is what gets used. Returns undefined
+ * unless `value` is a plain object whose keys and values are non-empty strings. With `dropUndefined` a key
+ * whose value is undefined is left out (a logger's tags); a query passes false, because dropping a filter
+ * would silently widen it to the whole buffer.
+ */
+export function copyTagRecord(value: unknown, dropUndefined: boolean): Record<string, string> | undefined {
+    if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+    const proto: unknown = Object.getPrototypeOf(value);
+    if (proto !== Object.prototype && proto !== null) return undefined; // a Map, a Date, a class instance...
+    const out: Record<string, string> = {};
+    for (const key of Object.keys(value)) {
+        if (key.length === 0) return undefined;
+        const v: unknown = (value as Record<string, unknown>)[key];
+        if (v === undefined && dropUndefined) continue;
+        if (typeof v !== "string" || v.length === 0) return undefined;
+        defineTag(out, key, v);
     }
-    return true;
+    return out;
 }
 
+/** Sets an own property even for a key like `__proto__`, which plain assignment would treat as the prototype. */
+export function defineTag(record: Record<string, string>, key: string, value: string): void {
+    Object.defineProperty(record, key, { value, enumerable: true, writable: true, configurable: true });
+}
+
+/** Validates a query and compiles its regex. Throws InvalidLogQueryError (code ERR_INVALID_LOG_QUERY). */
 export function normalizeQuery(query: LogQuery | undefined): Required<Pick<LogQuery, "limit" | "order">> & {
-    tags: string[];
+    tags: [key: string, value: string][];
     regex?: RegExp;
     since?: number;
     until?: number;
@@ -89,10 +108,10 @@ export function normalizeQuery(query: LogQuery | undefined): Required<Pick<LogQu
     for (const k of Object.keys(q)) if (!known.has(k)) throw new InvalidLogQueryError(`unknown query field '${k}'`);
 
     // Defaults apply only to omitted fields; an explicit null is a malformed query, not "no filter".
-    // Copied once, then validated and matched from the copy, so the caller's array is never read again.
-    const tags = q.tags === undefined ? [] : Array.isArray(q.tags) ? Array.from(q.tags) : q.tags;
-    if (!isTagArray(tags))
-        throw new InvalidLogQueryError("tags must be an array of non-empty strings");
+    // Copied once, then matched from the copy, so the caller's record is never read again.
+    const tagRecord = q.tags === undefined ? {} : copyTagRecord(q.tags, false);
+    if (!tagRecord) throw new InvalidLogQueryError("tags must be a record of non-empty strings, such as { cid: '...' }");
+    const tags = Object.entries(tagRecord);
 
     let regex: RegExp | undefined;
     if (q.regex !== undefined) {
@@ -185,7 +204,8 @@ export class LogRingBuffer {
         const matches = (e: LogEntry): boolean => {
             if (q.since !== undefined && e.time < q.since) return false;
             if (q.until !== undefined && e.time > q.until) return false;
-            for (const t of q.tags) if (!e.tags.includes(t)) return false;
+            // An entry's tags are own properties holding strings, so an inherited name can never equal `value`.
+            for (const [key, value] of q.tags) if (e.tags[key] !== value) return false;
             if (q.regex) {
                 q.regex.lastIndex = 0;
                 if (!q.regex.test(`${e.namespace} ${e.msg}`)) return false;

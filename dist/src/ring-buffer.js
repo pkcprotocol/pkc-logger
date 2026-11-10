@@ -12,25 +12,43 @@ export class InvalidLogQueryError extends Error {
 const ENTRY_FIXED_COST = 64;
 export function entryCost(entry) {
     let cost = ENTRY_FIXED_COST + entry.msg.length + entry.namespace.length;
-    for (const t of entry.tags)
-        cost += t.length;
+    for (const key of Object.keys(entry.tags))
+        cost += key.length + entry.tags[key].length;
     return cost;
 }
 function isNonNegativeInt(v) {
     return typeof v === "number" && Number.isInteger(v) && v >= 0;
 }
-/** Validates a query and compiles its regex. Throws InvalidLogQueryError (code ERR_INVALID_LOG_QUERY). */
-/** An array of non-empty strings with no holes (`some` and `every` skip holes, so index every position). */
-export function isTagArray(value) {
-    if (!Array.isArray(value))
-        return false;
-    for (let i = 0; i < value.length; i++) {
-        const t = value[i];
-        if (typeof t !== "string" || t.length === 0)
-            return false;
+/**
+ * Copies a tag record, reading each value once, so what was validated is what gets used. Returns undefined
+ * unless `value` is a plain object whose keys and values are non-empty strings. With `dropUndefined` a key
+ * whose value is undefined is left out (a logger's tags); a query passes false, because dropping a filter
+ * would silently widen it to the whole buffer.
+ */
+export function copyTagRecord(value, dropUndefined) {
+    if (typeof value !== "object" || value === null || Array.isArray(value))
+        return undefined;
+    const proto = Object.getPrototypeOf(value);
+    if (proto !== Object.prototype && proto !== null)
+        return undefined; // a Map, a Date, a class instance...
+    const out = {};
+    for (const key of Object.keys(value)) {
+        if (key.length === 0)
+            return undefined;
+        const v = value[key];
+        if (v === undefined && dropUndefined)
+            continue;
+        if (typeof v !== "string" || v.length === 0)
+            return undefined;
+        defineTag(out, key, v);
     }
-    return true;
+    return out;
 }
+/** Sets an own property even for a key like `__proto__`, which plain assignment would treat as the prototype. */
+export function defineTag(record, key, value) {
+    Object.defineProperty(record, key, { value, enumerable: true, writable: true, configurable: true });
+}
+/** Validates a query and compiles its regex. Throws InvalidLogQueryError (code ERR_INVALID_LOG_QUERY). */
 export function normalizeQuery(query) {
     const q = query === undefined ? {} : query;
     if (typeof q !== "object" || q === null || Array.isArray(q))
@@ -40,10 +58,11 @@ export function normalizeQuery(query) {
         if (!known.has(k))
             throw new InvalidLogQueryError(`unknown query field '${k}'`);
     // Defaults apply only to omitted fields; an explicit null is a malformed query, not "no filter".
-    // Copied once, then validated and matched from the copy, so the caller's array is never read again.
-    const tags = q.tags === undefined ? [] : Array.isArray(q.tags) ? Array.from(q.tags) : q.tags;
-    if (!isTagArray(tags))
-        throw new InvalidLogQueryError("tags must be an array of non-empty strings");
+    // Copied once, then matched from the copy, so the caller's record is never read again.
+    const tagRecord = q.tags === undefined ? {} : copyTagRecord(q.tags, false);
+    if (!tagRecord)
+        throw new InvalidLogQueryError("tags must be a record of non-empty strings, such as { cid: '...' }");
+    const tags = Object.entries(tagRecord);
     let regex;
     if (q.regex !== undefined) {
         if (typeof q.regex !== "object" || q.regex === null || typeof q.regex.source !== "string")
@@ -136,8 +155,9 @@ export class LogRingBuffer {
                 return false;
             if (q.until !== undefined && e.time > q.until)
                 return false;
-            for (const t of q.tags)
-                if (!e.tags.includes(t))
+            // An entry's tags are own properties holding strings, so an inherited name can never equal `value`.
+            for (const [key, value] of q.tags)
+                if (e.tags[key] !== value)
                     return false;
             if (q.regex) {
                 q.regex.lastIndex = 0;

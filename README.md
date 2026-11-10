@@ -35,17 +35,41 @@ import { createLogger } from "@pkcprotocol/pkc-logger";
 
 const root = createLogger({ buffer: { maxBytes: 4 * 1024 * 1024 } }); // 4 MiB is the default; 0 disables capture
 
-const community = root.child({ namespace: "pkc-js:local-community", tags: [communityPublicKey] });
-const update = community.child({ namespace: "update", tags: [commentCid] });
+const community = root.child({ namespace: "pkc-js:local-community", tags: { publicKey: communityPublicKey } });
+const update = community.child({ namespace: "update", tags: { cid: commentCid } });
 
 update("recalculated", { replyCount: 3 });
-// prints:  pkc-js:local-community:update [<publicKey>, <cid>] recalculated {replyCount: 3} +2ms
+// prints:  pkc-js:local-community:update [publicKey=<publicKey>, cid=<cid>] recalculated {replyCount: 3} +2ms
 ```
 
 - A child's namespace is appended to its parent's with a colon, so existing `DEBUG` patterns keep working.
-- Tags are a flat `string[]` of identifiers, accumulated down the chain and deduplicated. They are printed in
-  brackets after the namespace, so a plain log file stays greppable by identifier.
+- Tags are a record of identifiers by name. A logger's effective tags are its ancestors' merged with its own.
+  They are printed as `[key=value, ...]` after the namespace, so a plain log file stays greppable by `cid=...`.
 - A root created without a namespace cannot log directly; use `child({ namespace })`.
+
+### Changing tags later
+
+Tags resolve through the parent chain every time a line is logged, so a tag set late still reaches loggers that
+were derived earlier:
+
+```js
+const log = root.child({ namespace: "pkc-js:local-community", tags: { publicKey } });
+const dbLog = log.child({ namespace: "db-handler" }); // handed to a helper once
+
+log.setTags({ publicKey: newPublicKey }); // rename
+dbLog("migrated"); // prints [publicKey=<newPublicKey>]
+```
+
+- `setTags` **replaces** the logger's own tags; it does not merge. Pass the whole record built from your own
+  fields. Do not spread `logger.tags` into it: that copies the ancestors' keys down, and a later change on an
+  ancestor would no longer reach this logger.
+- A key whose value is `undefined` is dropped, so one function can pass every field and be called whenever one
+  changes: `log.setTags({ signature: this.signature, cid: this.cid })` works before the cid is known.
+- Keys and values must be non-empty strings. Anything else (`""`, `null`, a number, an array) throws.
+- `logger.tags` is the current effective record, frozen.
+- A child's key **shadows** an ancestor's same key: the ancestor's value is then absent from the child's lines
+  and from their entries. When both identifiers matter, give them distinct keys, such as `cid` and `parentCid`.
+- Entries already in the buffer keep the tags they were logged with.
 
 ## Levels
 
@@ -67,14 +91,14 @@ Every printed line is formatted **once, at emit**, into a bounded, color-free st
 caps, cycles collapsed, Errors with their stack) and stored as an entry:
 
 ```ts
-{ seq: number, time: number, level: "log" | "error" | "trace", namespace: string, msg: string, tags: string[] }
+{ seq: number, time: number, level: "log" | "error" | "trace", namespace: string, msg: string, tags: Record<string, string> }
 ```
 
 Each root keeps a byte-bounded ring buffer of its entries (newest evict oldest). Query it from the root or any child:
 
 ```js
 const { entries, nextCursor } = root.getLogs({
-    tags: [communityPublicKey],          // every listed tag must be present
+    tags: { publicKey: communityPublicKey }, // every listed key must have exactly this value
     regex: { source: "failed", flags: "i" }, // tested against `namespace + " " + msg`
     since: Date.now() - 60_000,          // inclusive, epoch ms
     until: Date.now(),
@@ -86,6 +110,10 @@ const { entries, nextCursor } = root.getLogs({
 
 An invalid query (bad regex, wrong types, unknown field) throws an `InvalidLogQueryError` with
 `code === "ERR_INVALID_LOG_QUERY"` before anything is scanned.
+
+`tags` matches by exact key and value. An identifier logged under two keys takes two queries, for example
+`{ tags: { cid } }` for a comment's own lines and `{ tags: { parentCid: cid } }` for its replies' lines. Unlike
+`setTags`, a query rejects an `undefined` value: dropping it would silently return the whole buffer.
 
 **`regex` is trusted input.** It runs on the JavaScript regex engine, synchronously, and cannot be interrupted, so a
 catastrophically backtracking pattern such as `(a+)+$` can block the process for seconds or longer. Only accept a
@@ -137,6 +165,16 @@ anyone else's, so each one is delivered back to it and the listener loops foreve
 ## Static controls
 
 `Logger.enable(namespaces)`, `Logger.disable()`, `Logger.enabled(namespaces)` forward to `debug` and are global.
+
+## Migrating from 0.2.0 to 0.3.0
+
+- Tags are a record, not an array: `tags: [publicKey, cid]` becomes `tags: { publicKey, cid }`, in `child`,
+  `createLogger` and `Logger`. The array form throws.
+- `entry.tags` and `logger.tags` are `Record<string, string>`.
+- `getLogs({ tags })` takes a record and matches by exact key and value; it no longer matches a value under any key.
+- Printed lines show `[key=value, ...]` instead of `[value, ...]`.
+- A child no longer accumulates a second value for a key its ancestor already set; it shadows it.
+- New: `logger.setTags(record)`.
 
 ## Migrating from 0.1.x to 0.2.0
 
