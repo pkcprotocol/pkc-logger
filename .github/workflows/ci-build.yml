@@ -64,7 +64,8 @@ jobs:
           for DELAY in 10 20 30 60; do
             sleep "$DELAY"
             VERSIONS=$(npm view "$NAME" versions --json) || continue
-            LISTED=$(node -p '[].concat(JSON.parse(process.argv[1])).includes(process.argv[2])' "$VERSIONS" "$VERSION")
+            LISTED=$(node -p '[].concat(JSON.parse(process.argv[1])).includes(process.argv[2])' \
+              "$VERSIONS" "$VERSION") || continue
             if [ "$LISTED" = true ]; then
               echo "npm publish failed, but npm lists $NAME@$VERSION, so it is published"
               exit 0
