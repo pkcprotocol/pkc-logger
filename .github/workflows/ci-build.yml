@@ -52,6 +52,23 @@ jobs:
           PUBLISHED=$(node -p '[].concat(JSON.parse(process.argv[1])).includes(process.argv[2])' "$VERSIONS" "$VERSION")
           echo "$NAME@$VERSION already on npm: $PUBLISHED"
           echo "published=$PUBLISHED" >> $GITHUB_OUTPUT
+      # npm can list a new version a little after its publish, so a run that starts right after another run's publish
+      # may read an old listing and publish the same version again, which npm rejects. A failed publish (that one, or a
+      # timeout after the upload went through) therefore counts as done once npm lists the version.
       - name: Publish to npm
         if: steps.registry.outputs.published == 'false'
-        run: npx --yes npm@latest publish --access public --provenance
+        run: |
+          npx --yes npm@latest publish --access public --provenance && exit 0
+          NAME=$(node -p "require('./package.json').name")
+          VERSION=$(node -p "require('./package.json').version")
+          for DELAY in 10 20 30 60; do
+            sleep "$DELAY"
+            VERSIONS=$(npm view "$NAME" versions --json) || continue
+            LISTED=$(node -p '[].concat(JSON.parse(process.argv[1])).includes(process.argv[2])' "$VERSIONS" "$VERSION")
+            if [ "$LISTED" = true ]; then
+              echo "npm publish failed, but npm lists $NAME@$VERSION, so it is published"
+              exit 0
+            fi
+          done
+          echo "npm publish failed and npm does not list $NAME@$VERSION"
+          exit 1
