@@ -8,6 +8,12 @@ jobs:
   on-success:
     runs-on: ubuntu-latest
     if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    # One release run at a time, never cancelled halfway. Overlapping runs compute the same version: the one whose push
+    # is rejected makes release-it delete the other's tag from origin, and both may try to publish it. A newer pending
+    # run can replace an older pending one; nothing is lost because every run releases all of master.
+    concurrency:
+      group: ci-build-release
+      cancel-in-progress: false
     permissions:
       contents: write
       id-token: write
@@ -27,24 +33,43 @@ jobs:
         run: |
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
-      - name: Get current version
-        id: before
-        run: echo "version=$(node -p "require('./package.json').version")" >> $GITHUB_OUTPUT
+      # Exits 0 when there are no commits since the last tag (requireCommitsFail: false). Any other failure, such as a
+      # rejected push, stops the job here, before a version that never reached master can be published.
       - name: Run release-it
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: npm run release -- --ci || true
-      - name: Check if released
-        id: release
+        run: npm run release -- --ci
+      # Asks the registry instead of comparing package.json before and after release-it, so re-running a release whose
+      # npm publish failed still publishes it while master is still at that release's tag. If a newer release runs
+      # first, it releases and publishes the next version and the failed one stays off npm. Fails the job if the
+      # registry cannot be read.
+      - name: Check if this version is on npm
+        id: registry
         run: |
-          AFTER=$(node -p "require('./package.json').version")
-          if [ "${{ steps.before.outputs.version }}" != "$AFTER" ]; then
-            echo "Released v$AFTER"
-            echo "released=true" >> $GITHUB_OUTPUT
-          else
-            echo "No new version to release"
-            echo "released=false" >> $GITHUB_OUTPUT
-          fi
+          NAME=$(node -p "require('./package.json').name")
+          VERSION=$(node -p "require('./package.json').version")
+          VERSIONS=$(npm view "$NAME" versions --json)
+          PUBLISHED=$(node -p '[].concat(JSON.parse(process.argv[1])).includes(process.argv[2])' "$VERSIONS" "$VERSION")
+          echo "$NAME@$VERSION already on npm: $PUBLISHED"
+          echo "published=$PUBLISHED" >> $GITHUB_OUTPUT
+      # npm can list a new version a little after its publish, so a run that starts right after another run's publish
+      # may read an old listing and publish the same version again, which npm rejects. A failed publish (that one, or a
+      # timeout after the upload went through) therefore counts as done once npm lists the version.
       - name: Publish to npm
-        if: steps.release.outputs.released == 'true'
-        run: npx --yes npm@latest publish --access public --provenance
+        if: steps.registry.outputs.published == 'false'
+        run: |
+          npx --yes npm@latest publish --access public --provenance && exit 0
+          NAME=$(node -p "require('./package.json').name")
+          VERSION=$(node -p "require('./package.json').version")
+          for DELAY in 10 20 30 60; do
+            sleep "$DELAY"
+            VERSIONS=$(npm view "$NAME" versions --json) || continue
+            LISTED=$(node -p '[].concat(JSON.parse(process.argv[1])).includes(process.argv[2])' \
+              "$VERSIONS" "$VERSION") || continue
+            if [ "$LISTED" = true ]; then
+              echo "npm publish failed, but npm lists $NAME@$VERSION, so it is published"
+              exit 0
+            fi
+          done
+          echo "npm publish failed and npm does not list $NAME@$VERSION"
+          exit 1
